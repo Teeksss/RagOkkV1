@@ -1,0 +1,111 @@
+stages:
+  - test
+  - build
+  - deploy-staging
+  - test-staging
+  - deploy-production
+  - monitor
+
+variables:
+  DOCKER_REGISTRY: "registry.example.com"
+  DOCKER_IMAGE: "registry.example.com/rag-api"
+  KUBE_CONTEXT_STAGING: "kubernetes-staging"
+  KUBE_CONTEXT_PRODUCTION: "kubernetes-production"
+  STAGING_NAMESPACE: "rag-system-staging"
+  PRODUCTION_NAMESPACE: "rag-system"
+
+# Cache pip dependencies between jobs
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - .pip-cache/
+
+# Run tests on each commit
+test:
+  stage: test
+  image: python:3.9-slim
+  script:
+    - pip install --cache-dir=.pip-cache -r requirements.txt
+    - pip install --cache-dir=.pip-cache pytest pytest-cov
+    - python -m pytest tests/ --cov=rag_system --cov-report=xml
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+# Build Docker image
+build:
+  stage: build
+  image: docker:20.10
+  services:
+    - docker:20.10-dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $DOCKER_REGISTRY
+  script:
+    - export TAG=${CI_COMMIT_SHA:0:8}
+    - docker build -t $DOCKER_IMAGE:$TAG .
+    - docker push $DOCKER_IMAGE:$TAG
+    - echo "TAG=${TAG}" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'main' || $CI_COMMIT_BRANCH == 'develop'
+
+# Deploy to staging environment
+deploy-staging:
+  stage: deploy-staging
+  image: bitnami/kubectl:latest
+  before_script:
+    - kubectl config use-context $KUBE_CONTEXT_STAGING
+  script:
+    - export TAG=${TAG}
+    - envsubst < deployment/kubernetes/rag-deployment.yaml | kubectl apply -f - -n $STAGING_NAMESPACE
+    - kubectl rollout status deployment/rag-api -n $STAGING_NAMESPACE
+  environment:
+    name: staging
+    url: https://api-staging.rag-system.example.com
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'develop'
+
+# Run integration tests on staging
+test-staging:
+  stage: test-staging
+  image: python:3.9-slim
+  script:
+    - pip install --cache-dir=.pip-cache -r requirements.txt
+    - pip install --cache-dir=.pip-cache pytest requests
+    - export TEST_API_URL="https://api-staging.rag-system.example.com"
+    - python -m pytest tests/integration/ -v
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'develop'
+
+# Deploy to production
+deploy-production:
+  stage: deploy-production
+  image: bitnami/kubectl:latest
+  before_script:
+    - kubectl config use-context $KUBE_CONTEXT_PRODUCTION
+  script:
+    - export TAG=${TAG}
+    - envsubst < deployment/kubernetes/rag-deployment.yaml | kubectl apply -f - -n $PRODUCTION_NAMESPACE
+    - kubectl rollout status deployment/rag-api -n $PRODUCTION_NAMESPACE
+  environment:
+    name: production
+    url: https://api.rag-system.example.com
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'main'
+
+# Monitoring after deployment
+monitor:
+  stage: monitor
+  image: python:3.9-slim
+  script:
+    - pip install --cache-dir=.pip-cache requests prometheus_client
+    - python deployment/ci-cd/monitor.py
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'main' && $CI_PIPELINE_SOURCE == 'schedule'
