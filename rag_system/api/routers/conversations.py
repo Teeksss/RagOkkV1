@@ -1,22 +1,23 @@
 """
-API endpoints for conversation management.
+API endpoints for conversations.
 """
 import logging
-import time
+import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, status, BackgroundTasks
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import func, desc
 from pydantic import BaseModel, Field
 
 from ...database.document_store import get_db
-from ...database.models import Conversation, Message, Feedback
+from ...database.models import Conversation, Message, Feedback, User
 from ...auth.middleware import user_required
 from ...utils.db_logger import DBLogger
 from ...generation.llm_service import LLMService
-from ..dependencies import get_llm_service
+from ...data_processing.vector_store_service import VectorStoreService
+from ..dependencies import get_vector_store_service, get_llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -27,21 +28,28 @@ router = APIRouter(
 )
 
 # Models
-class ConversationCreate(BaseModel):
-    """Conversation creation model."""
-    title: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class ConversationUpdate(BaseModel):
-    """Conversation update model."""
-    title: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
 class MessageCreate(BaseModel):
     """Message creation model."""
-    content: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1, max_length=10000)
+
+
+class MessageResponse(BaseModel):
+    """Message response model."""
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    timestamp: datetime
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ConversationResponse(BaseModel):
+    """Conversation response model."""
+    id: str
+    title: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -50,12 +58,50 @@ class FeedbackCreate(BaseModel):
     rating: Optional[int] = Field(None, ge=1, le=5)
     thumbs_up: Optional[bool] = None
     thumbs_down: Optional[bool] = None
-    comment: Optional[str] = None
+    comment: Optional[str] = Field(None, max_length=1000)
 
 
-@router.post("/", response_model=Dict[str, Any])
+@router.get("", response_model=List[ConversationResponse])
+async def list_conversations(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    token: Dict[str, Any] = Depends(user_required),
+    db: Session = Depends(get_db)
+):
+    """
+    List user's conversations.
+    """
+    # Get user's conversations with message count
+    conversations = db.query(
+        Conversation,
+        func.count(Message.id).label('message_count')
+    ).outerjoin(
+        Message, Conversation.id == Message.conversation_id
+    ).filter(
+        Conversation.user_id == token.get("user_id")
+    ).group_by(
+        Conversation.id
+    ).order_by(
+        desc(Conversation.updated_at)
+    ).offset(skip).limit(limit).all()
+    
+    # Format conversations
+    result = []
+    for conv, message_count in conversations:
+        result.append({
+            "id": conv.id,
+            "title": conv.title,
+            "created_at": conv.created_at,
+            "updated_at": conv.updated_at,
+            "message_count": message_count,
+            "metadata": conv.metadata
+        })
+    
+    return result
+
+
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=ConversationResponse)
 async def create_conversation(
-    conversation_data: ConversationCreate,
     token: Dict[str, Any] = Depends(user_required),
     db: Session = Depends(get_db)
 ):
@@ -63,11 +109,13 @@ async def create_conversation(
     Create a new conversation.
     """
     # Create conversation
+    import uuid
     conversation = Conversation(
+        id=str(uuid.uuid4()),
         user_id=token.get("user_id"),
-        title=conversation_data.title,
-        metadata=conversation_data.metadata,
-        created_at=datetime.utcnow()
+        title="New Conversation",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
     )
     
     db.add(conversation)
@@ -77,55 +125,11 @@ async def create_conversation(
     return {
         "id": conversation.id,
         "title": conversation.title,
-        "created_at": conversation.created_at.isoformat(),
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+        "message_count": 0,
         "metadata": conversation.metadata
     }
-
-
-@router.get("/", response_model=List[Dict[str, Any]])
-async def list_conversations(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    token: Dict[str, Any] = Depends(user_required),
-    db: Session = Depends(get_db)
-):
-    """
-    List user's conversations.
-    """
-    # Get conversations
-    conversations = db.query(Conversation).filter(
-        Conversation.user_id == token.get("user_id")
-    ).order_by(
-        desc(Conversation.updated_at)
-    ).offset(skip).limit(limit).all()
-    
-    # Format response
-    result = []
-    
-    for conversation in conversations:
-        # Get last message
-        last_message = db.query(Message).filter(
-            Message.conversation_id == conversation.id
-        ).order_by(
-            desc(Message.timestamp)
-        ).first()
-        
-        # Get message count
-        message_count = db.query(Message).filter(
-            Message.conversation_id == conversation.id
-        ).count()
-        
-        result.append({
-            "id": conversation.id,
-            "title": conversation.title,
-            "created_at": conversation.created_at.isoformat(),
-            "updated_at": conversation.updated_at.isoformat(),
-            "message_count": message_count,
-            "last_message": last_message.content[:100] + "..." if last_message and len(last_message.content) > 100 else last_message.content if last_message else None,
-            "metadata": conversation.metadata
-        })
-    
-    return result
 
 
 @router.get("/{conversation_id}", response_model=Dict[str, Any])
@@ -135,7 +139,7 @@ async def get_conversation(
     db: Session = Depends(get_db)
 ):
     """
-    Get conversation by ID.
+    Get conversation details.
     """
     # Get conversation
     conversation = db.query(Conversation).filter(
@@ -152,27 +156,23 @@ async def get_conversation(
     # Get messages
     messages = db.query(Message).filter(
         Message.conversation_id == conversation_id
-    ).order_by(
-        Message.timestamp
-    ).all()
+    ).order_by(Message.timestamp).all()
     
     # Format messages
     formatted_messages = []
-    
     for message in messages:
         # Get feedback for message
         feedback = db.query(Feedback).filter(
             Feedback.message_id == message.id
         ).first()
         
-        # Format message
         formatted_message = {
             "id": message.id,
+            "conversation_id": message.conversation_id,
             "role": message.role,
             "content": message.content,
-            "timestamp": message.timestamp.isoformat(),
-            "metadata": message.metadata,
-            "feedback": None
+            "timestamp": message.timestamp,
+            "metadata": message.metadata
         }
         
         # Add feedback if exists
@@ -187,24 +187,26 @@ async def get_conversation(
         formatted_messages.append(formatted_message)
     
     return {
-        "id": conversation.id,
-        "title": conversation.title,
-        "created_at": conversation.created_at.isoformat(),
-        "updated_at": conversation.updated_at.isoformat(),
-        "messages": formatted_messages,
-        "metadata": conversation.metadata
+        "conversation": {
+            "id": conversation.id,
+            "title": conversation.title,
+            "created_at": conversation.created_at,
+            "updated_at": conversation.updated_at,
+            "metadata": conversation.metadata
+        },
+        "messages": formatted_messages
     }
 
 
-@router.put("/{conversation_id}", response_model=Dict[str, Any])
+@router.put("/{conversation_id}", response_model=ConversationResponse)
 async def update_conversation(
+    update_data: Dict[str, Any] = Body(...),
     conversation_id: str = Path(..., description="Conversation ID"),
-    conversation_data: ConversationUpdate = Body(...),
     token: Dict[str, Any] = Depends(user_required),
     db: Session = Depends(get_db)
 ):
     """
-    Update conversation.
+    Update conversation details.
     """
     # Get conversation
     conversation = db.query(Conversation).filter(
@@ -218,26 +220,30 @@ async def update_conversation(
             detail="Conversation not found"
         )
     
-    # Update conversation
-    if conversation_data.title is not None:
-        conversation.title = conversation_data.title
+    # Update title if provided
+    if "title" in update_data:
+        conversation.title = update_data["title"]
     
-    if conversation_data.metadata is not None:
-        # Merge metadata
-        current_metadata = conversation.metadata or {}
-        current_metadata.update(conversation_data.metadata)
-        conversation.metadata = current_metadata
+    # Update metadata if provided
+    if "metadata" in update_data:
+        conversation.metadata = update_data["metadata"]
     
     conversation.updated_at = datetime.utcnow()
     
     db.commit()
     db.refresh(conversation)
     
+    # Get message count
+    message_count = db.query(func.count(Message.id)).filter(
+        Message.conversation_id == conversation_id
+    ).scalar() or 0
+    
     return {
         "id": conversation.id,
         "title": conversation.title,
-        "created_at": conversation.created_at.isoformat(),
-        "updated_at": conversation.updated_at.isoformat(),
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+        "message_count": message_count,
         "metadata": conversation.metadata
     }
 
@@ -249,7 +255,7 @@ async def delete_conversation(
     db: Session = Depends(get_db)
 ):
     """
-    Delete conversation.
+    Delete a conversation.
     """
     # Get conversation
     conversation = db.query(Conversation).filter(
@@ -263,46 +269,25 @@ async def delete_conversation(
             detail="Conversation not found"
         )
     
-    # Delete feedback first
-    # Get message IDs
-    message_ids = [message.id for message in conversation.messages]
-    
-    # Delete feedback for messages
-    if message_ids:
-        db.query(Feedback).filter(
-            Feedback.message_id.in_(message_ids)
-        ).delete(synchronize_session=False)
-    
-    # Delete messages
-    db.query(Message).filter(
-        Message.conversation_id == conversation_id
-    ).delete(synchronize_session=False)
-    
-    # Delete conversation
+    # Delete messages (cascade will handle this)
     db.delete(conversation)
     db.commit()
     
-    return {
-        "status": "success",
-        "message": "Conversation deleted"
-    }
+    return {"message": "Conversation deleted"}
 
 
 @router.post("/{conversation_id}/messages", response_model=Dict[str, Any])
-async def create_message(
+async def send_message(
+    message_data: MessageCreate,
     conversation_id: str = Path(..., description="Conversation ID"),
-    message_data: MessageCreate = Body(...),
     token: Dict[str, Any] = Depends(user_required),
     db: Session = Depends(get_db),
     llm_service: LLMService = Depends(get_llm_service)
 ):
     """
-    Create a new message in a conversation.
+    Send a message to a conversation.
     """
-    start_time = time.time()
-    db_logger = DBLogger(db)
-    
-    # Get conversation
+    # Check conversation exists
     conversation = db.query(Conversation).filter(
         Conversation.id == conversation_id,
         Conversation.user_id == token.get("user_id")
@@ -315,39 +300,42 @@ async def create_message(
         )
     
     # Create user message
+    import uuid
     user_message = Message(
+        id=str(uuid.uuid4()),
         conversation_id=conversation_id,
         user_id=token.get("user_id"),
         role="user",
         content=message_data.content,
-        timestamp=datetime.utcnow(),
-        metadata=message_data.metadata
+        timestamp=datetime.utcnow()
     )
     
     db.add(user_message)
-    db.commit()
-    db.refresh(user_message)
     
     # Update conversation
     conversation.updated_at = datetime.utcnow()
-    db.commit()
     
+    # Generate response
     try:
-        # Generate response
         response = llm_service.process_query(
             query=message_data.content,
-            conversation_id=conversation_id
+            conversation_id=conversation_id,
+            context_window=5,
+            user_id=token.get("user_id")
         )
         
         # Create assistant message
         assistant_message = Message(
+            id=str(uuid.uuid4()),
             conversation_id=conversation_id,
+            user_id=None,
             role="assistant",
-            content=response.get("answer", ""),
+            content=response["answer"],
             timestamp=datetime.utcnow(),
             metadata={
-                "model": response.get("model"),
-                "context": [c.get("document_id") for c in response.get("context", [])]
+                "model": response["model"],
+                "elapsed_time": response["elapsed_time"],
+                "context": [doc.get("document_id") for doc in response["context"] if doc.get("document_id")]
             }
         )
         
@@ -355,91 +343,73 @@ async def create_message(
         db.commit()
         db.refresh(assistant_message)
         
-        elapsed_time = time.time() - start_time
+        # Set conversation title if it's the first message
+        message_count = db.query(func.count(Message.id)).filter(
+            Message.conversation_id == conversation_id
+        ).scalar() or 0
         
-        # Log query
-        db_logger.log_info(
-            operation="query",
-            message=f"Query: {message_data.content[:50]}...",
-            user_id=token.get("user_id"),
-            request_path=f"/conversations/{conversation_id}/messages",
-            response_time=elapsed_time,
-            status_code=200,
-            data={
-                "query": message_data.content,
-                "conversation_id": conversation_id,
-                "user_message_id": user_message.id,
-                "assistant_message_id": assistant_message.id
-            }
-        )
+        if message_count <= 2 and conversation.title == "New Conversation":
+            # Use first few words of user message for title
+            title_text = message_data.content[:50]
+            if len(message_data.content) > 50:
+                title_text += "..."
+            
+            conversation.title = title_text
+            db.commit()
         
         return {
             "user_message": {
                 "id": user_message.id,
+                "conversation_id": user_message.conversation_id,
                 "role": user_message.role,
                 "content": user_message.content,
-                "timestamp": user_message.timestamp.isoformat(),
-                "metadata": user_message.metadata
+                "timestamp": user_message.timestamp
             },
             "assistant_message": {
                 "id": assistant_message.id,
+                "conversation_id": assistant_message.conversation_id,
                 "role": assistant_message.role,
                 "content": assistant_message.content,
-                "timestamp": assistant_message.timestamp.isoformat(),
+                "timestamp": assistant_message.timestamp,
                 "metadata": assistant_message.metadata
             },
-            "context": response.get("context", []),
-            "took": elapsed_time
+            "context": response["context"]
         }
     
     except Exception as e:
-        elapsed_time = time.time() - start_time
-        
         # Log error
+        logger.error(f"Error generating response: {str(e)}")
+        db_logger = DBLogger(db)
         db_logger.log_error(
-            operation="query",
-            error_message=str(e),
+            operation="message_generate",
+            error_message=f"Error generating response: {str(e)}",
             user_id=token.get("user_id"),
-            latency=elapsed_time,
-            data={
-                "query": message_data.content,
-                "conversation_id": conversation_id,
-                "user_message_id": user_message.id
-            }
+            data={"conversation_id": conversation_id, "message": message_data.content},
+            exception=e
         )
         
-        # Create error message
-        error_message = Message(
-            conversation_id=conversation_id,
-            role="system",
-            content="Sorry, an error occurred while processing your request.",
-            timestamp=datetime.utcnow(),
-            metadata={
-                "error": str(e)
-            }
-        )
-        
-        db.add(error_message)
+        # Save user message
         db.commit()
         
+        # Raise error
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing query: {str(e)}"
+            detail=f"Error generating response: {str(e)}"
         )
 
 
 @router.post("/{conversation_id}/messages/{message_id}/feedback")
-async def create_feedback(
+async def add_feedback(
+    feedback_data: FeedbackCreate,
     conversation_id: str = Path(..., description="Conversation ID"),
     message_id: str = Path(..., description="Message ID"),
-    feedback_data: FeedbackCreate = Body(...),
     token: Dict[str, Any] = Depends(user_required),
     db: Session = Depends(get_db)
 ):
     """
-    Create feedback for a message.
+    Add feedback to a message.
     """
-    # Get conversation
+    # Check conversation exists
     conversation = db.query(Conversation).filter(
         Conversation.id == conversation_id,
         Conversation.user_id == token.get("user_id")
@@ -451,7 +421,7 @@ async def create_feedback(
             detail="Conversation not found"
         )
     
-    # Get message
+    # Check message exists
     message = db.query(Message).filter(
         Message.id == message_id,
         Message.conversation_id == conversation_id
@@ -465,8 +435,12 @@ async def create_feedback(
     
     # Check if feedback already exists
     existing_feedback = db.query(Feedback).filter(
-        Feedback.message_id == message_id
+        Feedback.message_id == message_id,
+        Feedback.user_id == token.get("user_id")
     ).first()
+    
+    # Update or create feedback
+    import uuid
     
     if existing_feedback:
         # Update existing feedback
@@ -475,23 +449,37 @@ async def create_feedback(
         
         if feedback_data.thumbs_up is not None:
             existing_feedback.thumbs_up = feedback_data.thumbs_up
-            # If thumbs up, ensure thumbs down is False
+            
+            # If thumbs up is True, set thumbs down to False
             if feedback_data.thumbs_up:
                 existing_feedback.thumbs_down = False
         
         if feedback_data.thumbs_down is not None:
             existing_feedback.thumbs_down = feedback_data.thumbs_down
-            # If thumbs down, ensure thumbs up is False
+            
+            # If thumbs down is True, set thumbs up to False
             if feedback_data.thumbs_down:
                 existing_feedback.thumbs_up = False
         
-        if feedback_data.comment is not None:
+        if feedback_data.comment:
             existing_feedback.comment = feedback_data.comment
         
-        feedback = existing_feedback
+        db.commit()
+        
+        return {
+            "message": "Feedback updated",
+            "feedback": {
+                "id": existing_feedback.id,
+                "rating": existing_feedback.rating,
+                "thumbs_up": existing_feedback.thumbs_up,
+                "thumbs_down": existing_feedback.thumbs_down,
+                "comment": existing_feedback.comment
+            }
+        }
     else:
         # Create new feedback
-        feedback = Feedback(
+        new_feedback = Feedback(
+            id=str(uuid.uuid4()),
             message_id=message_id,
             user_id=token.get("user_id"),
             rating=feedback_data.rating,
@@ -501,34 +489,34 @@ async def create_feedback(
             created_at=datetime.utcnow()
         )
         
-        db.add(feedback)
-    
-    db.commit()
-    db.refresh(feedback)
-    
-    # Log feedback
-    db_logger = DBLogger(db)
-    db_logger.log_info(
-        operation="feedback",
-        message=f"Feedback for message {message_id}",
-        user_id=token.get("user_id"),
-        data={
-            "message_id": message_id,
-            "conversation_id": conversation_id,
-            "rating": feedback.rating,
-            "thumbs_up": feedback.thumbs_up,
-            "thumbs_down": feedback.thumbs_down
+        db.add(new_feedback)
+        db.commit()
+        db.refresh(new_feedback)
+        
+        # Log feedback
+        db_logger = DBLogger(db)
+        db_logger.log_info(
+            operation="feedback_create",
+            message=f"Feedback added to message {message_id}",
+            user_id=token.get("user_id"),
+            data={
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "feedback": {
+                    "rating": new_feedback.rating,
+                    "thumbs_up": new_feedback.thumbs_up,
+                    "thumbs_down": new_feedback.thumbs_down
+                }
+            }
+        )
+        
+        return {
+            "message": "Feedback added",
+            "feedback": {
+                "id": new_feedback.id,
+                "rating": new_feedback.rating,
+                "thumbs_up": new_feedback.thumbs_up,
+                "thumbs_down": new_feedback.thumbs_down,
+                "comment": new_feedback.comment
+            }
         }
-    )
-    
-    return {
-        "status": "success",
-        "feedback": {
-            "id": feedback.id,
-            "rating": feedback.rating,
-            "thumbs_up": feedback.thumbs_up,
-            "thumbs_down": feedback.thumbs_down,
-            "comment": feedback.comment,
-            "created_at": feedback.created_at.isoformat()
-        }
-    }

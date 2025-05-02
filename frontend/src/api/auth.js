@@ -3,151 +3,179 @@ import axios from 'axios';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
 
 /**
- * Get authentication token
- * @returns {string|null} Authentication token
- */
-export const getToken = () => {
-  return localStorage.getItem('authToken');
-};
-
-/**
- * Get authentication header
- * @returns {Object} Authentication header
+ * Get auth header for API requests
+ * 
+ * @returns {Object} Auth header object
  */
 export const getAuthHeader = () => {
-  const token = getToken();
+  const token = localStorage.getItem('access_token');
+  
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
 /**
  * Login user
- * @param {string} username - Username
- * @param {string} password - Password
- * @returns {Promise<Object>} Login result with token and user data
+ * 
+ * @param {Object} credentials Login credentials
+ * @param {string} credentials.username Username or email
+ * @param {string} credentials.password Password
+ * @returns {Promise<Object>} Login response with tokens
  */
-export const login = async (username, password) => {
-  const formData = new FormData();
-  formData.append('username', username);
-  formData.append('password', password);
-
-  const response = await axios.post(`${API_URL}/auth/token`, formData);
-  
-  if (response.data.access_token) {
-    localStorage.setItem('authToken', response.data.access_token);
-    localStorage.setItem('user', JSON.stringify(response.data.user));
+export const login = async (credentials) => {
+  try {
+    const response = await axios.post(
+      `${API_URL}/auth/login`,
+      {
+        username: credentials.username,
+        password: credentials.password
+      }
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Invalid username or password'
+    );
   }
-  
-  return response.data;
 };
 
 /**
- * Register user
- * @param {Object} userData - User data
- * @returns {Promise<Object>} Registered user
+ * Register new user
+ * 
+ * @param {Object} userData User registration data
+ * @param {string} userData.username Username
+ * @param {string} userData.email Email address
+ * @param {string} userData.password Password
+ * @param {string} userData.full_name Full name (optional)
+ * @returns {Promise<Object>} Registration response
  */
 export const register = async (userData) => {
-  const response = await axios.post(`${API_URL}/auth/register`, userData);
-  return response.data;
+  try {
+    const response = await axios.post(
+      `${API_URL}/auth/register`,
+      userData
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Registration failed. Please try again.'
+    );
+  }
 };
 
 /**
  * Logout user
+ * 
+ * @param {string} refreshToken Refresh token
+ * @returns {Promise<Object>} Logout response
  */
-export const logout = () => {
-  localStorage.removeItem('authToken');
-  localStorage.removeItem('user');
-};
-
-/**
- * Get current user
- * @returns {Object|null} Current user
- */
-export const getCurrentUser = () => {
-  const userStr = localStorage.getItem('user');
-  if (!userStr) return null;
-  
+export const logout = async (refreshToken) => {
   try {
-    return JSON.parse(userStr);
+    const response = await axios.post(
+      `${API_URL}/auth/logout/refresh`,
+      { refresh_token: refreshToken }
+    );
+    
+    return response.data;
   } catch (error) {
-    console.error("Failed to parse user data:", error);
-    return null;
+    throw new Error(
+      error.response?.data?.detail || 
+      'Logout failed. Please try again.'
+    );
   }
 };
 
 /**
- * Update user profile
- * @param {Object} userData - User data to update
- * @returns {Promise<Object>} Updated user
+ * Refresh access token
+ * 
+ * @param {string} refreshToken Refresh token
+ * @returns {Promise<Object>} Token refresh response
  */
-export const updateUserProfile = async (userData) => {
-  const response = await axios.put(
-    `${API_URL}/users/me`,
-    userData,
-    { headers: getAuthHeader() }
-  );
-  
-  // Update stored user data
-  if (response.data) {
-    localStorage.setItem('user', JSON.stringify(response.data));
+export const refreshToken = async (refreshToken) => {
+  try {
+    const response = await axios.post(
+      `${API_URL}/auth/refresh`,
+      { refresh_token: refreshToken }
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Token refresh failed. Please login again.'
+    );
   }
-  
-  return response.data;
 };
 
 /**
- * Change password
- * @param {string} currentPassword - Current password
- * @param {string} newPassword - New password
- * @returns {Promise<Object>} Result
+ * Get authenticated user data
+ * 
+ * @returns {Promise<Object>} User data
  */
-export const changePassword = async (currentPassword, newPassword) => {
-  const response = await axios.put(
-    `${API_URL}/users/me/password`,
-    {
-      current_password: currentPassword,
-      new_password: newPassword
-    },
-    { headers: getAuthHeader() }
-  );
-  
-  return response.data;
+export const getAuthUser = async () => {
+  try {
+    const response = await axios.get(
+      `${API_URL}/users/me`,
+      { headers: getAuthHeader() }
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Failed to get user data.'
+    );
+  }
 };
 
 /**
- * Reset password request
- * @param {string} email - User email
- * @returns {Promise<Object>} Result
+ * Request password reset
+ * 
+ * @param {string} email User email
+ * @returns {Promise<Object>} Password reset request response
  */
-export const resetPasswordRequest = async (email) => {
-  const response = await axios.post(
-    `${API_URL}/auth/reset-password`,
-    { email }
-  );
-  
-  return response.data;
+export const requestPasswordReset = async (email) => {
+  try {
+    const response = await axios.post(
+      `${API_URL}/auth/password-reset/request`,
+      { email }
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Password reset request failed. Please try again.'
+    );
+  }
 };
 
 /**
- * Check if user has role
- * @param {string} role - Role to check
- * @returns {boolean} Whether user has role
+ * Reset password with token
+ * 
+ * @param {Object} resetData Password reset data
+ * @param {string} resetData.token Reset token
+ * @param {string} resetData.password New password
+ * @returns {Promise<Object>} Password reset response
  */
-export const hasRole = (role) => {
-  const user = getCurrentUser();
-  if (!user) return false;
-  
-  if (role === 'admin') {
-    return user.is_admin === true;
+export const resetPassword = async (resetData) => {
+  try {
+    const response = await axios.post(
+      `${API_URL}/auth/password-reset/verify`,
+      {
+        token: resetData.token,
+        password: resetData.password
+      }
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Password reset failed. Please try again.'
+    );
   }
-  
-  if (role === 'moderator') {
-    return user.is_moderator === true || user.is_admin === true;
-  }
-  
-  // Everyone has the 'user' role if they're authenticated
-  if (role === 'user') {
-    return true;
-  }
-  
-  return false;
 };

@@ -1,246 +1,262 @@
 """
-Database logger for tracking system operations.
+Database logger utility.
 """
 import logging
+import traceback
 import json
-from typing import Dict, Any, Optional
-from datetime import datetime
 import uuid
+from datetime import datetime
+from typing import Dict, Any, Optional
+
 from sqlalchemy.orm import Session
 
 from ..database.models import Log
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
 class DBLogger:
     """
-    Logger that stores operations in the database.
+    Database logger for storing logs in the database.
     """
     
-    def __init__(self, db_session: Session):
+    def __init__(self, db: Session):
         """
         Initialize database logger.
         
         Args:
-            db_session: Database session
+            db: Database session
         """
-        self.db = db_session
+        self.db = db
     
-    def log_operation(self,
-                     level: str,
-                     message: str,
-                     operation: str,
-                     user_id: Optional[str] = None,
-                     request_path: Optional[str] = None,
-                     request_method: Optional[str] = None,
-                     status_code: Optional[int] = None,
-                     response_time: Optional[float] = None,
-                     ip_address: Optional[str] = None,
-                     data: Optional[Dict[str, Any]] = None) -> None:
+    def log(
+        self,
+        level: str,
+        operation: str,
+        message: str,
+        user_id: Optional[str] = None,
+        request_path: Optional[str] = None,
+        request_method: Optional[str] = None,
+        status_code: Optional[int] = None,
+        ip_address: Optional[str] = None,
+        response_time: Optional[float] = None,
+        error_message: Optional[str] = None,
+        exception: Optional[Exception] = None,
+        data: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
-        Log an operation to the database.
+        Log message to database.
         
         Args:
             level: Log level (INFO, WARNING, ERROR)
+            operation: Operation name
             message: Log message
-            operation: Operation type
             user_id: User ID
             request_path: Request path
             request_method: Request method
             status_code: Response status code
-            response_time: Response time in seconds
             ip_address: Client IP address
+            response_time: Response time in seconds
+            error_message: Error message
+            exception: Exception object
             data: Additional data
         """
+        # Validate level
+        valid_levels = ["INFO", "WARNING", "ERROR", "DEBUG"]
+        if level not in valid_levels:
+            level = "INFO"
+        
+        # Create log data
+        log_data = data or {}
+        
+        # Add exception details if provided
+        if exception:
+            log_data["exception"] = {
+                "type": type(exception).__name__,
+                "message": str(exception),
+                "traceback": traceback.format_exception(
+                    type(exception), exception, exception.__traceback__
+                )
+            }
+        
+        # Create log entry
+        log_entry = Log(
+            id=str(uuid.uuid4()),
+            timestamp=datetime.utcnow(),
+            level=level,
+            operation=operation,
+            message=message,
+            user_id=user_id,
+            request_path=request_path,
+            request_method=request_method,
+            status_code=status_code,
+            response_time=response_time,
+            ip_address=ip_address,
+            data=log_data
+        )
+        
         try:
-            log_entry = Log(
-                id=str(uuid.uuid4()),
-                timestamp=datetime.utcnow(),
-                level=level.upper(),
-                message=message,
-                operation=operation,
-                user_id=user_id,
-                request_path=request_path,
-                request_method=request_method,
-                status_code=status_code,
-                response_time=response_time,
-                ip_address=ip_address,
-                data=data
-            )
-            
+            # Add log entry to database
             self.db.add(log_entry)
             self.db.commit()
+        
         except Exception as e:
-            logger.error(f"Error logging to database: {str(e)}")
+            # Rollback session
             self.db.rollback()
+            
+            # Log error to console
+            logger.error(f"Failed to write log to database: {str(e)}")
+            logger.debug(f"Log entry: {message}, Operation: {operation}")
     
-    def log_info(self,
-                operation: str,
-                message: str,
-                user_id: Optional[str] = None,
-                request_path: Optional[str] = None,
-                request_method: Optional[str] = None,
-                status_code: Optional[int] = None,
-                response_time: Optional[float] = None,
-                data: Optional[Dict[str, Any]] = None) -> None:
+    def log_info(
+        self,
+        operation: str,
+        message: str,
+        user_id: Optional[str] = None,
+        request_path: Optional[str] = None,
+        request_method: Optional[str] = None,
+        status_code: Optional[int] = None,
+        ip_address: Optional[str] = None,
+        response_time: Optional[float] = None,
+        data: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
-        Log an info event.
+        Log info message to database.
         
         Args:
-            operation: Operation type
+            operation: Operation name
             message: Log message
             user_id: User ID
             request_path: Request path
             request_method: Request method
             status_code: Response status code
+            ip_address: Client IP address
             response_time: Response time in seconds
             data: Additional data
         """
-        self.log_operation(
+        self.log(
             level="INFO",
-            message=message,
             operation=operation,
+            message=message,
             user_id=user_id,
             request_path=request_path,
             request_method=request_method,
             status_code=status_code,
+            ip_address=ip_address,
             response_time=response_time,
             data=data
         )
     
-    def log_warning(self,
-                   operation: str,
-                   message: str,
-                   user_id: Optional[str] = None,
-                   request_path: Optional[str] = None,
-                   request_method: Optional[str] = None,
-                   status_code: Optional[int] = None,
-                   response_time: Optional[float] = None,
-                   data: Optional[Dict[str, Any]] = None) -> None:
+    def log_warning(
+        self,
+        operation: str,
+        message: str,
+        user_id: Optional[str] = None,
+        request_path: Optional[str] = None,
+        request_method: Optional[str] = None,
+        status_code: Optional[int] = None,
+        ip_address: Optional[str] = None,
+        response_time: Optional[float] = None,
+        data: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
-        Log a warning event.
+        Log warning message to database.
         
         Args:
-            operation: Operation type
+            operation: Operation name
             message: Log message
             user_id: User ID
             request_path: Request path
             request_method: Request method
             status_code: Response status code
+            ip_address: Client IP address
             response_time: Response time in seconds
             data: Additional data
         """
-        self.log_operation(
+        self.log(
             level="WARNING",
-            message=message,
             operation=operation,
+            message=message,
             user_id=user_id,
             request_path=request_path,
             request_method=request_method,
             status_code=status_code,
+            ip_address=ip_address,
             response_time=response_time,
             data=data
         )
     
-    def log_error(self,
-                 operation: str,
-                 error_message: str,
-                 user_id: Optional[str] = None,
-                 request_path: Optional[str] = None,
-                 request_method: Optional[str] = None,
-                 status_code: Optional[int] = None,
-                 latency: Optional[float] = None,
-                 data: Optional[Dict[str, Any]] = None) -> None:
+    def log_error(
+        self,
+        operation: str,
+        error_message: str,
+        user_id: Optional[str] = None,
+        request_path: Optional[str] = None,
+        request_method: Optional[str] = None,
+        status_code: Optional[int] = None,
+        ip_address: Optional[str] = None,
+        response_time: Optional[float] = None,
+        exception: Optional[Exception] = None,
+        data: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
-        Log an error event.
+        Log error message to database.
         
         Args:
-            operation: Operation type
+            operation: Operation name
             error_message: Error message
             user_id: User ID
             request_path: Request path
             request_method: Request method
             status_code: Response status code
-            latency: Response time in seconds
+            ip_address: Client IP address
+            response_time: Response time in seconds
+            exception: Exception object
             data: Additional data
         """
-        self.log_operation(
+        self.log(
             level="ERROR",
-            message=error_message,
             operation=operation,
+            message=error_message,
             user_id=user_id,
             request_path=request_path,
             request_method=request_method,
             status_code=status_code,
-            response_time=latency,
+            ip_address=ip_address,
+            response_time=response_time,
+            error_message=error_message,
+            exception=exception,
             data=data
         )
     
-    def log_search(self,
-                  query: str,
-                  user_id: Optional[str] = None,
-                  result_count: int = 0,
-                  filters: Optional[Dict[str, Any]] = None,
-                  latency: Optional[float] = None) -> None:
+    def log_debug(
+        self,
+        operation: str,
+        message: str,
+        user_id: Optional[str] = None,
+        request_path: Optional[str] = None,
+        request_method: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
-        Log a search operation.
+        Log debug message to database.
         
         Args:
-            query: Search query
+            operation: Operation name
+            message: Log message
             user_id: User ID
-            result_count: Number of results
-            filters: Search filters
-            latency: Search latency in seconds
+            request_path: Request path
+            request_method: Request method
+            data: Additional data
         """
-        data = {
-            "query": query,
-            "result_count": result_count
-        }
-        
-        if filters:
-            data["filters"] = filters
-        
-        self.log_operation(
-            level="INFO",
-            message=f"Search: '{query}' ({result_count} results)",
-            operation="search",
-            user_id=user_id,
-            response_time=latency,
-            status_code=200,
-            data=data
-        )
-    
-    def log_upload(self,
-                  filename: str,
-                  content_type: str,
-                  file_size: int,
-                  user_id: Optional[str] = None,
-                  document_id: Optional[str] = None,
-                  latency: Optional[float] = None) -> None:
-        """
-        Log a document upload.
-        
-        Args:
-            filename: Uploaded filename
-            content_type: Content type
-            file_size: File size in bytes
-            user_id: User ID
-            document_id: Document ID
-            latency: Upload latency in seconds
-        """
-        data = {
-            "filename": filename,
-            "content_type": content_type,
-            "file_size": file_size,
-            "document_id": document_id
-        }
-        
-        self.log_operation(
-            level="INFO",
-            message=f"Upload: '{filename}' ({file_size} bytes)",
-            operation="upload",
-            user_id=user_id,
-            response_time=latency,
-            status_code=200,
-            data=data
-        )
+        # Only log debug messages in debug mode
+        if settings.DEBUG:
+            self.log(
+                level="DEBUG",
+                operation=operation,
+                message=message,
+                user_id=user_id,
+                request_path=request_path,
+                request_method=request_method,
+                data=data
+            )

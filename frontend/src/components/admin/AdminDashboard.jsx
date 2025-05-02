@@ -1,388 +1,483 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { fetchDashboardStats, fetchActiveUsers, fetchPopularDocuments, fetchQueryStats, fetchErrorLogs, fetchRecentFeedbacks } from '../../api/admin';
-import UserList from './UserList';
-import DocumentList from './DocumentList';
-import StatCard from './StatCard';
-import ErrorLogs from './ErrorLogs';
-import FeedbackList from './FeedbackList';
-import RoleGuard from '../common/RoleGuard';
+import { Link } from 'react-router-dom';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 const AdminDashboard = () => {
-  const [timePeriod, setTimePeriod] = useState('7d');
-  const [activeTab, setActiveTab] = useState('overview');
   const [stats, setStats] = useState(null);
   const [activeUsers, setActiveUsers] = useState([]);
-  const [popularDocuments, setPopularDocuments] = useState([]);
+  const [popularDocs, setPopularDocs] = useState([]);
   const [queryStats, setQueryStats] = useState(null);
-  const [errorLogs, setErrorLogs] = useState([]);
-  const [recentFeedbacks, setRecentFeedbacks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [timePeriod, setTimePeriod] = useState('7d');
 
   useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        const dashboardStats = await fetchDashboardStats(timePeriod);
-        setStats(dashboardStats);
+    fetchDashboardData();
+  }, [timePeriod]);
 
-        if (activeTab === 'overview' || activeTab === 'users') {
-          const users = await fetchActiveUsers(timePeriod);
-          setActiveUsers(users);
-        }
-
-        if (activeTab === 'overview' || activeTab === 'documents') {
-          const documents = await fetchPopularDocuments(timePeriod);
-          setPopularDocuments(documents);
-        }
-
-        if (activeTab === 'overview' || activeTab === 'queries') {
-          const queries = await fetchQueryStats(timePeriod);
-          setQueryStats(queries);
-        }
-
-        if (activeTab === 'errors') {
-          const logs = await fetchErrorLogs(timePeriod);
-          setErrorLogs(logs);
-        }
-
-        if (activeTab === 'feedback') {
-          const feedbacks = await fetchRecentFeedbacks();
-          setRecentFeedbacks(feedbacks);
-        }
-      } catch (error) {
-        console.error("Error loading dashboard data:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
-  }, [timePeriod, activeTab]);
-
-  const renderTimePeriodSelector = () => (
-    <div className="flex justify-end mb-4">
-      <div className="inline-flex rounded-md shadow-sm" role="group">
-        <button
-          type="button"
-          className={`px-4 py-2 text-sm font-medium ${timePeriod === '24h' 
-            ? 'bg-blue-600 text-white'
-            : 'bg-white text-gray-700 hover:bg-gray-50'}`}
-          onClick={() => setTimePeriod('24h')}
-        >
-          24 Hours
-        </button>
-        <button
-          type="button"
-          className={`px-4 py-2 text-sm font-medium ${timePeriod === '7d' 
-            ? 'bg-blue-600 text-white'
-            : 'bg-white text-gray-700 hover:bg-gray-50'}`}
-          onClick={() => setTimePeriod('7d')}
-        >
-          7 Days
-        </button>
-        <button
-          type="button"
-          className={`px-4 py-2 text-sm font-medium ${timePeriod === '30d' 
-            ? 'bg-blue-600 text-white'
-            : 'bg-white text-gray-700 hover:bg-gray-50'}`}
-          onClick={() => setTimePeriod('30d')}
-        >
-          30 Days
-        </button>
-      </div>
-    </div>
-  );
-
-  const renderTabs = () => (
-    <div className="border-b border-gray-200 mb-6">
-      <nav className="-mb-px flex space-x-8">
-        <button
-          className={`${activeTab === 'overview'
-            ? 'border-blue-500 text-blue-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          onClick={() => setActiveTab('overview')}
-        >
-          Overview
-        </button>
-        <button
-          className={`${activeTab === 'users'
-            ? 'border-blue-500 text-blue-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          onClick={() => setActiveTab('users')}
-        >
-          Users
-        </button>
-        <button
-          className={`${activeTab === 'documents'
-            ? 'border-blue-500 text-blue-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          onClick={() => setActiveTab('documents')}
-        >
-          Documents
-        </button>
-        <button
-          className={`${activeTab === 'queries'
-            ? 'border-blue-500 text-blue-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          onClick={() => setActiveTab('queries')}
-        >
-          Queries
-        </button>
-        <button
-          className={`${activeTab === 'errors'
-            ? 'border-blue-500 text-blue-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          onClick={() => setActiveTab('errors')}
-        >
-          Errors
-        </button>
-        <button
-          className={`${activeTab === 'feedback'
-            ? 'border-blue-500 text-blue-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          onClick={() => setActiveTab('feedback')}
-        >
-          Feedback
-        </button>
-      </nav>
-    </div>
-  );
-
-  const renderOverview = () => {
-    if (!stats) return null;
-
-    return (
-      <div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <StatCard
-            title="Active Users"
-            value={stats.users.active}
-            total={stats.users.total}
-            icon="users"
-            color="blue"
-          />
-          <StatCard
-            title="Documents"
-            value={stats.documents.new}
-            total={stats.documents.total}
-            icon="document"
-            color="green"
-          />
-          <StatCard
-            title="Conversations"
-            value={stats.conversations.new}
-            total={stats.conversations.total}
-            icon="chat"
-            color="purple"
-          />
-          <StatCard
-            title="Errors"
-            value={stats.errors.count}
-            total={null}
-            icon="exclamation"
-            color="red"
-          />
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-          <div className="bg-white shadow rounded-lg p-6">
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Query Activity</h3>
-            {queryStats && (
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={queryStats.time_series}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="time" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="query_count"
-                    stroke="#3B82F6"
-                    name="Queries"
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          <div className="bg-white shadow rounded-lg p-6">
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Feedback Summary</h3>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div className="text-center">
-                <p className="text-sm text-gray-500">Thumbs Up</p>
-                <p className="text-2xl font-bold text-green-600">{stats.feedback.thumbs_up}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-sm text-gray-500">Thumbs Down</p>
-                <p className="text-2xl font-bold text-red-600">{stats.feedback.thumbs_down}</p>
-              </div>
-            </div>
-            <ResponsiveContainer width="100%" height={200}>
-              <PieChart>
-                <Pie
-                  data={[
-                    { name: 'Thumbs Up', value: stats.feedback.thumbs_up || 0, fill: '#10B981' },
-                    { name: 'Thumbs Down', value: stats.feedback.thumbs_down || 0, fill: '#EF4444' },
-                  ]}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  outerRadius={80}
-                  dataKey="value"
-                />
-                <Tooltip />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="bg-white shadow rounded-lg p-6">
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Most Active Users</h3>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      User
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Messages
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {activeUsers.slice(0, 5).map((user) => (
-                    <tr key={user.user_id}>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-gray-900">{user.username}</div>
-                        <div className="text-sm text-gray-500">{user.email}</div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {user.message_count}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="bg-white shadow rounded-lg p-6">
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Popular Documents</h3>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Document
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Usage
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {popularDocuments.slice(0, 5).map((doc) => (
-                    <tr key={doc.document_id}>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-gray-900">{doc.title}</div>
-                        <div className="text-sm text-gray-500">{doc.filename}</div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {doc.usage_count}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+  const fetchDashboardData = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // In a real application, these would be API calls to backend endpoints
+      // For this example, we'll simulate the responses
+      
+      // Simulate API calls with some delay
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Mock data
+      const statsData = {
+        time_period: timePeriod,
+        users: {
+          active: 42,
+          total: 87,
+          active_percentage: 48.3
+        },
+        documents: {
+          new: 156,
+          total: 2378
+        },
+        messages: {
+          new: 874,
+          total: 12456
+        },
+        feedback: {
+          new: 134,
+          positive: 112,
+          positive_percentage: 83.6
+        },
+        errors: 8
+      };
+      
+      const activeUsersData = [
+        { id: '1', username: 'johndoe', email: 'john@example.com', message_count: 156, last_login: '2025-04-30T15:32:00Z', is_admin: false },
+        { id: '2', username: 'janedoe', email: 'jane@example.com', message_count: 124, last_login: '2025-05-01T12:15:00Z', is_admin: true },
+        { id: '3', username: 'bobsmith', email: 'bob@example.com', message_count: 98, last_login: '2025-05-02T08:45:00Z', is_admin: false },
+        { id: '4', username: 'alicejones', email: 'alice@example.com', message_count: 76, last_login: '2025-05-01T18:22:00Z', is_admin: false },
+        { id: '5', username: 'mikebrown', email: 'mike@example.com', message_count: 65, last_login: '2025-04-29T10:05:00Z', is_admin: false }
+      ];
+      
+      const popularDocsData = [
+        { document_id: '1', filename: 'annual_report_2024.pdf', title: 'Annual Report 2024', content_type: 'application/pdf', created_at: '2025-01-15T09:30:00Z', usage_count: 87 },
+        { document_id: '2', filename: 'product_specs.docx', title: 'Product Specifications', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', created_at: '2025-02-22T14:15:00Z', usage_count: 63 },
+        { document_id: '3', filename: 'user_manual.pdf', title: 'User Manual v2.1', content_type: 'application/pdf', created_at: '2025-03-10T11:45:00Z', usage_count: 58 },
+        { document_id: '4', filename: 'financial_forecast.xlsx', title: 'Financial Forecast Q2 2025', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', created_at: '2025-04-05T16:20:00Z', usage_count: 42 },
+        { document_id: '5', filename: 'technical_overview.md', title: 'Technical Overview', content_type: 'text/markdown', created_at: '2025-04-18T13:10:00Z', usage_count: 36 }
+      ];
+      
+      const queryStatsData = {
+        time_period: timePeriod,
+        total_queries: 1458,
+        avg_response_time: 1.2,
+        common_terms: [
+          { term: 'how', count: 120 },
+          { term: 'what', count: 95 },
+          { term: 'document', count: 78 },
+          { term: 'search', count: 65 },
+          { term: 'help', count: 50 }
+        ]
+      };
+      
+      setStats(statsData);
+      setActiveUsers(activeUsersData);
+      setPopularDocs(popularDocsData);
+      setQueryStats(queryStatsData);
+    } catch (err) {
+      console.error('Error fetching dashboard data:', err);
+      setError('Failed to load dashboard data. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const renderContent = () => {
-    if (loading) {
+  const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date);
+  };
+
+  const getFileIcon = (contentType) => {
+    if (contentType?.includes('pdf')) {
       return (
-        <div className="flex justify-center items-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-        </div>
+        <svg className="w-6 h-6 text-red-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+        </svg>
+      );
+    } else if (contentType?.includes('word') || contentType?.includes('document')) {
+      return (
+        <svg className="w-6 h-6 text-blue-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+        </svg>
+      );
+    } else if (contentType?.includes('sheet') || contentType?.includes('excel')) {
+      return (
+        <svg className="w-6 h-6 text-green-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+          <path fillRule="evenodd" d="M5 4a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V5a1 1 0 00-1-1H5zm6 9a1 1 0 11-2 0 1 1 0 012 0zm4-3a1 1 0 00-1-1h-4a1 1 0 000 2h4a1 1 0 001-1zm-5-3a1 1 0 11-2 0 1 1 0 012 0z" clipRule="evenodd" />
+        </svg>
+      );
+    } else if (contentType?.includes('markdown') || contentType?.includes('md')) {
+      return (
+        <svg className="w-6 h-6 text-purple-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+        </svg>
+      );
+    } else {
+      return (
+        <svg className="w-6 h-6 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+        </svg>
       );
     }
-
-    switch (activeTab) {
-      case 'overview':
-        return renderOverview();
-      case 'users':
-        return <UserList users={activeUsers} />;
-      case 'documents':
-        return <DocumentList documents={popularDocuments} />;
-      case 'queries':
-        return (
-          <div className="bg-white shadow rounded-lg p-6">
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Query Statistics</h3>
-            {queryStats && (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <p className="text-sm text-gray-500">Total Queries</p>
-                    <p className="text-2xl font-bold">{queryStats.total_queries}</p>
-                  </div>
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <p className="text-sm text-gray-500">Avg Response Time</p>
-                    <p className="text-2xl font-bold">{queryStats.avg_response_time}s</p>
-                  </div>
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <p className="text-sm text-gray-500">Time Period</p>
-                    <p className="text-2xl font-bold">{timePeriod}</p>
-                  </div>
-                </div>
-                <ResponsiveContainer width="100%" height={400}>
-                  <BarChart data={queryStats.time_series}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="time" />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="query_count" fill="#3B82F6" name="Query Count" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </>
-            )}
-          </div>
-        );
-      case 'errors':
-        return <ErrorLogs errors={errorLogs} />;
-      case 'feedback':
-        return <FeedbackList feedbacks={recentFeedbacks} />;
-      default:
-        return renderOverview();
-    }
   };
 
+  if (loading && !stats) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <LoadingSpinner size="large" />
+      </div>
+    );
+  }
+
   return (
-    <RoleGuard requiredRoles={['admin']}>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8">
-          <h1 className="text-2xl font-bold text-gray-900">Admin Dashboard</h1>
-          {renderTimePeriodSelector()}
+    <div className="space-y-6">
+      {error && (
+        <div className="bg-red-50 border-l-4 border-red-400 p-4">
+          <div className="flex">
+            <div className="flex-shrink-0">
+              <svg className="h-5 w-5 text-red-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              </svg>
+            </div>
+            <div className="ml-3">
+              <p className="text-sm text-red-700">{error}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Time Period Selector */}
+      <div className="bg-white shadow sm:rounded-lg overflow-hidden">
+        <div className="px-4 py-5 sm:p-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg leading-6 font-medium text-gray-900">
+              Dashboard Overview
+            </h3>
+            <div className="flex items-center space-x-2">
+              <span className="text-sm text-gray-500">Time period:</span>
+              <select
+                value={timePeriod}
+                onChange={(e) => setTimePeriod(e.target.value)}
+                className="block pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+              >
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All time</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {stats && (
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+          {/* Users Card */}
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0 bg-blue-100 rounded-md p-3">
+                  <svg className="h-6 w-6 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                  </svg>
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      Active Users
+                    </dt>
+                    <dd>
+                      <div className="text-lg font-medium text-gray-900">
+                        {stats.users.active}
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        of {stats.users.total} total ({stats.users.active_percentage}%)
+                      </div>
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-5 py-3">
+              <div className="text-sm">
+                <Link to="/admin/users" className="font-medium text-blue-600 hover:text-blue-500">
+                  View all users
+                </Link>
+              </div>
+            </div>
+          </div>
+
+          {/* Documents Card */}
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0 bg-green-100 rounded-md p-3">
+                  <svg className="h-6 w-6 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      New Documents
+                    </dt>
+                    <dd>
+                      <div className="text-lg font-medium text-gray-900">
+                        {stats.documents.new}
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        of {stats.documents.total} total
+                      </div>
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-5 py-3">
+              <div className="text-sm">
+                <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+                  View documents
+                </a>
+              </div>
+            </div>
+          </div>
+
+          {/* Messages Card */}
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0 bg-purple-100 rounded-md p-3">
+                  <svg className="h-6 w-6 text-purple-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                  </svg>
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      New Messages
+                    </dt>
+                    <dd>
+                      <div className="text-lg font-medium text-gray-900">
+                        {stats.messages.new}
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        of {stats.messages.total} total
+                      </div>
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-5 py-3">
+              <div className="text-sm">
+                <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+                  View conversations
+                </a>
+              </div>
+            </div>
+          </div>
+
+          {/* Feedback Card */}
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0 bg-yellow-100 rounded-md p-3">
+                  <svg className="h-6 w-6 text-yellow-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10h4.764a2 2 0 011.789 2.894l-3.5 7A2 2 0 0115.263 21h-4.017c-.163 0-.326-.02-.485-.06L7 20m7-10V5a2 2 0 00-2-2h-.095c-.5 0-.905.405-.905.905A3.61 3.61 0 018.5 7.5" />
+                  </svg>
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      Positive Feedback
+                    </dt>
+                    <dd>
+                      <div className="text-lg font-medium text-gray-900">
+                        {stats.feedback.positive_percentage}%
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        {stats.feedback.positive} of {stats.feedback.new}
+                      </div>
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-5 py-3">
+              <div className="text-sm">
+                <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+                  View all feedback
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        {/* Active Users */}
+        <div className="bg-white shadow sm:rounded-lg overflow-hidden">
+          <div className="px-4 py-5 sm:px-6">
+            <h3 className="text-lg leading-6 font-medium text-gray-900">
+              Most Active Users
+            </h3>
+            <p className="mt-1 max-w-2xl text-sm text-gray-500">
+              Based on message count in the selected time period.
+            </p>
+          </div>
+          
+          <div className="border-t border-gray-200 px-4 py-5 sm:p-0">
+            <div className="sm:divide-y sm:divide-gray-200">
+              {activeUsers.map(user => (
+                <div key={user.id} className="py-4 sm:py-5 sm:px-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0 h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
+                        <span className="text-blue-600 font-medium text-lg">
+                          {user.username.charAt(0).toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="ml-4">
+                        <div className="text-sm font-medium text-gray-900">{user.username}</div>
+                        <div className="text-sm text-gray-500">{user.email}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center">
+                      <div className="text-sm text-gray-500 mr-4">
+                        <div>{user.message_count} messages</div>
+                        <div>Last seen: {formatDate(user.last_login)}</div>
+                      </div>
+                      {user.is_admin && (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                          Admin
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          
+          <div className="bg-gray-50 px-4 py-4 sm:px-6">
+            <Link to="/admin/users" className="text-sm font-medium text-blue-600 hover:text-blue-500">
+              View all users
+            </Link>
+          </div>
         </div>
 
-        {renderTabs()}
-        {renderContent()}
+        {/* Popular Documents */}
+        <div className="bg-white shadow sm:rounded-lg overflow-hidden">
+          <div className="px-4 py-5 sm:px-6">
+            <h3 className="text-lg leading-6 font-medium text-gray-900">
+              Popular Documents
+            </h3>
+            <p className="mt-1 max-w-2xl text-sm text-gray-500">
+              Most accessed documents in the selected time period.
+            </p>
+          </div>
+          
+          <div className="border-t border-gray-200 px-4 py-5 sm:p-0">
+            <div className="sm:divide-y sm:divide-gray-200">
+              {popularDocs.map(doc => (
+                <div key={doc.document_id} className="py-4 sm:py-5 sm:px-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0 h-10 w-10 flex items-center justify-center">
+                        {getFileIcon(doc.content_type)}
+                      </div>
+                      <div className="ml-4">
+                        <div className="text-sm font-medium text-gray-900">{doc.title}</div>
+                        <div className="text-sm text-gray-500">{doc.filename}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center">
+                      <div className="text-sm text-gray-500 mr-4">
+                        <div>{doc.usage_count} uses</div>
+                        <div>Added: {formatDate(doc.created_at)}</div>
+                      </div>
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        {doc.content_type.split('/')[1]}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          
+          <div className="bg-gray-50 px-4 py-4 sm:px-6">
+            <a href="#" className="text-sm font-medium text-blue-600 hover:text-blue-500">
+              View all documents
+            </a>
+          </div>
+        </div>
       </div>
-    </RoleGuard>
+
+      {/* Query Stats */}
+      {queryStats && (
+        <div className="bg-white shadow sm:rounded-lg overflow-hidden">
+          <div className="px-4 py-5 sm:px-6">
+            <h3 className="text-lg leading-6 font-medium text-gray-900">
+              Query Statistics
+            </h3>
+            <p className="mt-1 max-w-2xl text-sm text-gray-500">
+              Overview of user queries and performance.
+            </p>
+          </div>
+          
+          <div className="border-t border-gray-200">
+            <div className="px-4 py-5 sm:p-6">
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <div className="text-sm font-medium text-gray-500">Total Queries</div>
+                  <div className="mt-1 text-3xl font-semibold text-gray-900">{queryStats.total_queries}</div>
+                </div>
+                
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <div className="text-sm font-medium text-gray-500">Avg Response Time</div>
+                  <div className="mt-1 text-3xl font-semibold text-gray-900">{queryStats.avg_response_time}s</div>
+                </div>
+                
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <div className="text-sm font-medium text-gray-500">System Errors</div>
+                  <div className="mt-1 text-3xl font-semibold text-gray-900">{stats.errors}</div>
+                </div>
+              </div>
+              
+              <div className="mt-6">
+                <h4 className="text-base font-medium text-gray-900">Common Search Terms</h4>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {queryStats.common_terms.map((term, index) => (
+                    <div key={index} className="bg-gray-100 px-3 py-1 rounded-full">
+                      <span className="text-sm font-medium text-gray-800">{term.term}</span>
+                      <span className="ml-1 text-xs text-gray-500">({term.count})</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 };
 

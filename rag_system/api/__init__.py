@@ -1,30 +1,17 @@
 """
-API module initialization.
+API routes.
 """
 from fastapi import APIRouter
 
-from .routers import (
-    documents, 
-    search, 
-    vector_index, 
-    document_versions, 
-    metrics,
-    users,
-    admin,
-    api_keys,
-    conversations
-)
+from .routers import documents, conversations, tags, auth, admin, api_keys
 
-# Create main API router
+# Create API router
 api_router = APIRouter()
 
-# Include all routers
+# Include routers
+api_router.include_router(auth.router)
 api_router.include_router(documents.router)
-api_router.include_router(search.router)
-api_router.include_router(vector_index.router)
-api_router.include_router(document_versions.router)
-api_router.include_router(metrics.router)
-api_router.include_router(users.router)
+api_router.include_router(conversations.router)
+api_router.include_router(tags.router)
 api_router.include_router(admin.router)
 api_router.include_router(api_keys.router)
-api_router.include_router(conversations.router)

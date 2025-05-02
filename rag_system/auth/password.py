@@ -1,38 +1,53 @@
 """
 Password hashing and verification.
 """
-import bcrypt
+import logging
+from typing import Tuple
 
-def get_password_hash(password: str) -> str:
+from passlib.context import CryptContext
+
+logger = logging.getLogger(__name__)
+
+# Create password context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
     """
-    Hash a password for storage.
+    Hash password.
     
     Args:
-        password: Plain text password
+        password: Plain password
         
     Returns:
         Hashed password
     """
-    # Generate salt
-    salt = bcrypt.gensalt()
-    
-    # Hash password
-    hashed = bcrypt.hashpw(password.encode(), salt)
-    
-    return hashed.decode()
+    return pwd_context.hash(password)
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
-    Verify a password against its hash.
+    Verify password.
     
     Args:
-        plain_password: Plain text password
+        plain_password: Plain password
         hashed_password: Hashed password
         
     Returns:
-        True if password is correct, False otherwise
+        Whether password is correct
     """
-    return bcrypt.checkpw(
-        plain_password.encode(),
-        hashed_password.encode()
-    )
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def generate_password_hash_with_salt(password: str) -> Tuple[str, str]:
+    """
+    Generate password hash with salt.
+    
+    Args:
+        password: Plain password
+        
+    Returns:
+        Tuple of (hash, salt)
+    """
+    hashed_password = hash_password(password)
+    return hashed_password, "salt"  # In bcrypt, salt is included in the hash

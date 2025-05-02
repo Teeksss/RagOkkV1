@@ -4,157 +4,170 @@ Advanced vector indexing with FAISS.
 import logging
 import os
 import time
-import pickle
 import json
-import uuid
-import tempfile
-from typing import List, Dict, Any, Optional, Union, Tuple
+import pickle
+from typing import List, Dict, Any, Optional, Tuple, Union
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 class FAISSConfigFactory:
     """
-    Factory for creating FAISS index configurations.
+    Factory for FAISS index configurations.
     """
     
-    def __init__(self):
-        """Initialize FAISS config factory."""
-        pass
-    
-    def get_available_configs(self) -> Dict[str, Dict[str, Any]]:
+    def get_recommended_config(self, 
+                             dimension: int, 
+                             dataset_size: Optional[int] = None) -> Dict[str, Any]:
         """
-        Get available index configurations.
-        
-        Returns:
-            Dictionary of index configurations
-        """
-        return {
-            "flat": {
-                "description": "Flat index (exact search, slow for large datasets)",
-                "parameters": {}
-            },
-            "ivf": {
-                "description": "IVF index (approximate search, good for medium-sized datasets)",
-                "parameters": {
-                    "nlist": "Number of clusters (16-1024)",
-                    "nprobe": "Number of clusters to search (1-nlist)"
-                }
-            },
-            "ivfpq": {
-                "description": "IVF with Product Quantization (very efficient for large datasets)",
-                "parameters": {
-                    "nlist": "Number of clusters (16-1024)",
-                    "m": "Number of subquantizers (1-dimension/2)",
-                    "nbits": "Number of bits per subquantizer (8-16)",
-                    "nprobe": "Number of clusters to search (1-nlist)"
-                }
-            },
-            "hnsw": {
-                "description": "Hierarchical Navigable Small World (fast and accurate)",
-                "parameters": {
-                    "M": "Number of connections per layer (12-64)",
-                    "efConstruction": "Construction-time exploration factor (40-800)",
-                    "efSearch": "Search-time exploration factor (40-800)"
-                }
-            }
-        }
-    
-    def get_recommended_config(self, dimension: int, dataset_size: int) -> Dict[str, Any]:
-        """
-        Get recommended index configuration based on dataset size.
+        Get recommended FAISS index configuration based on dimension and dataset size.
         
         Args:
             dimension: Vector dimension
             dataset_size: Estimated dataset size
             
         Returns:
-            Recommended index configuration
+            FAISS configuration dictionary
         """
-        if dataset_size < 10000:
-            # For small datasets, use flat index
-            return {
-                "index_type": "flat",
-                "metric": "cosine",
-                "parameters": {}
-            }
-        elif dataset_size < A=100000:
-            # For medium datasets, use IVF
-            nlist = min(max(dataset_size // 50, 16), 1024)
-            return {
-                "index_type": "ivf",
-                "metric": "cosine",
-                "parameters": {
-                    "nlist": nlist,
-                    "nprobe": min(nlist // 4, 64)
-                }
-            }
+        if not dataset_size or dataset_size < 1000:
+            # Small dataset: use flat index
+            return self.get_flat_config()
+        elif dataset_size < 10000:
+            # Medium dataset: use IVF index
+            return self.get_ivf_config(dimension)
+        elif dataset_size < 1000000:
+            # Large dataset: use IVF with PQ compression
+            return self.get_ivf_pq_config(dimension)
         else:
-            # For large datasets, use IVFPQ
-            nlist = min(max(dataset_size // 100, 64), 4096)
+            # Very large dataset: use HNSW
+            return self.get_hnsw_config(dimension)
+    
+    def get_flat_config(self) -> Dict[str, Any]:
+        """
+        Get configuration for a flat (exact) index.
+        
+        Returns:
+            FAISS configuration dictionary
+        """
+        return {
+            "index_type": "flat",
+            "metric": "cosine",
+            "description": "Exact search with cosine similarity"
+        }
+    
+    def get_ivf_config(self, dimension: int) -> Dict[str, Any]:
+        """
+        Get configuration for an IVF (Inverted File) index.
+        
+        Args:
+            dimension: Vector dimension
             
-            # Calculate m (number of subquantizers)
-            # m should divide dimension
-            m = dimension // 2
+        Returns:
+            FAISS configuration dictionary
+        """
+        # Determine number of centroids
+        nlist = 100  # Default
+        
+        return {
+            "index_type": "ivf",
+            "metric": "cosine",
+            "nlist": nlist,  # Number of centroids
+            "nprobe": 10,    # Number of centroids to visit during search
+            "description": "Approximate search with IVF clustering"
+        }
+    
+    def get_ivf_pq_config(self, dimension: int) -> Dict[str, Any]:
+        """
+        Get configuration for an IVF-PQ (Inverted File with Product Quantization) index.
+        
+        Args:
+            dimension: Vector dimension
             
-            # Find largest divisor of dimension that is <= m
-            while m > 1:
-                if dimension % m == 0:
+        Returns:
+            FAISS configuration dictionary
+        """
+        # Determine number of centroids and subquantizers
+        nlist = 100  # Default
+        
+        # Number of sub-quantizers (M) should divide the dimension
+        m = dimension // 4
+        if m == 0:
+            m = 1
+        elif dimension % m != 0:
+            # Find a divisor of dimension for m
+            for i in range(m, 0, -1):
+                if dimension % i == 0:
+                    m = i
                     break
-                m -= 1
+        
+        # Number of bits per subquantizer
+        nbits = 8
+        
+        return {
+            "index_type": "ivfpq",
+            "metric": "cosine",
+            "nlist": nlist,  # Number of centroids
+            "nprobe": 10,    # Number of centroids to visit during search
+            "m": m,          # Number of subquantizers
+            "nbits": nbits,  # Number of bits per subquantizer
+            "description": "Approximate search with IVF clustering and PQ compression"
+        }
+    
+    def get_hnsw_config(self, dimension: int) -> Dict[str, Any]:
+        """
+        Get configuration for an HNSW (Hierarchical Navigable Small World) index.
+        
+        Args:
+            dimension: Vector dimension
             
-            return {
-                "index_type": "ivfpq",
-                "metric": "cosine",
-                "parameters": {
-                    "nlist": nlist,
-                    "m": m,
-                    "nbits": 8,
-                    "nprobe": min(nlist // 4, 64)
-                }
-            }
+        Returns:
+            FAISS configuration dictionary
+        """
+        return {
+            "index_type": "hnsw",
+            "metric": "cosine",
+            "M": 32,         # Number of connections per layer
+            "efConstruction": 200,  # Size of the dynamic candidate list during construction
+            "efSearch": 128,       # Size of the dynamic candidate list during search
+            "description": "Approximate search with HNSW graph"
+        }
 
 
 class AdvancedVectorIndex:
     """
-    Advanced vector index using FAISS.
+    Advanced vector index for efficient similarity search.
     """
     
     def __init__(self, 
-                 dimension: int = 384,
-                 metric: str = "cosine",
+                 dimension: int, 
+                 metric: str = "cosine", 
                  config: Optional[Dict[str, Any]] = None):
         """
-        Initialize advanced vector index.
+        Initialize vector index.
         
         Args:
             dimension: Vector dimension
-            metric: Distance metric (cosine, l2, ip)
+            metric: Distance metric (cosine, l2, or ip)
             config: Index configuration
         """
         self.dimension = dimension
         self.metric = metric
-        self.config = config or {}
+        self.config = config or FAISSConfigFactory().get_flat_config()
         
-        # UUIDs to IDs mapping
-        self.uuid_to_id = {}
+        # Data storage
+        self.ids: List[str] = []
+        self.vectors: List[np.ndarray] = []
+        self.id_to_index: Dict[str, int] = {}
+        self.metadata: List[Dict[str, Any]] = []
         
-        # Metadata storage
-        self.metadata = {}
-        
-        # Performance tracking
-        self.search_times = []
-        
-        # Initialize FAISS index
+        # Initialize index
+        self._index = None
         self._initialize_index()
     
     def _initialize_index(self) -> None:
         """Initialize FAISS index."""
         try:
             import faiss
-            
-            # Determine index type
-            index_type = self.config.get("index_type", "flat")
             
             # Convert metric to FAISS metric
             if self.metric == "cosine":
@@ -167,178 +180,156 @@ class AdvancedVectorIndex:
                 faiss_metric = faiss.METRIC_INNER_PRODUCT
                 self.normalize = False
             else:
-                logger.warning(f"Unknown metric: {self.metric}, using cosine")
+                logger.warning(f"Unsupported metric: {self.metric}, using cosine")
                 faiss_metric = faiss.METRIC_INNER_PRODUCT
                 self.normalize = True
             
-            # Create index based on type
+            # Create index based on configuration
+            index_type = self.config.get("index_type", "flat")
+            
             if index_type == "flat":
-                self.index = faiss.IndexFlatIP(self.dimension) if faiss_metric == faiss.METRIC_INNER_PRODUCT else faiss.IndexFlatL2(self.dimension)
+                self._index = faiss.IndexFlatIP(self.dimension) if faiss_metric == faiss.METRIC_INNER_PRODUCT else faiss.IndexFlatL2(self.dimension)
             
             elif index_type == "ivf":
-                # Get parameters
-                nlist = self.config.get("parameters", {}).get("nlist", 100)
-                
-                # Create quantizer
+                # IVF index requires a trained quantizer
                 quantizer = faiss.IndexFlatIP(self.dimension) if faiss_metric == faiss.METRIC_INNER_PRODUCT else faiss.IndexFlatL2(self.dimension)
-                
-                # Create IVF index
-                self.index = faiss.IndexIVFFlat(quantizer, self.dimension, nlist, faiss_metric)
-                
-                # Index needs to be trained before adding vectors
-                self.needs_training = True
+                nlist = self.config.get("nlist", 100)
+                self._index = faiss.IndexIVFFlat(quantizer, self.dimension, nlist, faiss_metric)
+                self._index.nprobe = self.config.get("nprobe", 10)
             
             elif index_type == "ivfpq":
-                # Get parameters
-                nlist = self.config.get("parameters", {}).get("nlist", 100)
-                m = self.config.get("parameters", {}).get("m", self.dimension // 2)
-                nbits = self.config.get("parameters", {}).get("nbits", 8)
-                
-                # Create quantizer
+                # IVF with Product Quantization
                 quantizer = faiss.IndexFlatIP(self.dimension) if faiss_metric == faiss.METRIC_INNER_PRODUCT else faiss.IndexFlatL2(self.dimension)
-                
-                # Create IVF-PQ index
-                self.index = faiss.IndexIVFPQ(quantizer, self.dimension, nlist, m, nbits, faiss_metric)
-                
-                # Index needs to be trained before adding vectors
-                self.needs_training = True
+                nlist = self.config.get("nlist", 100)
+                m = self.config.get("m", self.dimension // 4)
+                nbits = self.config.get("nbits", 8)
+                self._index = faiss.IndexIVFPQ(quantizer, self.dimension, nlist, m, nbits, faiss_metric)
+                self._index.nprobe = self.config.get("nprobe", 10)
             
             elif index_type == "hnsw":
-                # Get parameters
-                M = self.config.get("parameters", {}).get("M", 32)
-                efConstruction = self.config.get("parameters", {}).get("efConstruction", 200)
-                
-                # Create HNSW index
-                self.index = faiss.IndexHNSWFlat(self.dimension, M, faiss_metric)
-                self.index.hnsw.efConstruction = efConstruction
-                
-                # HNSW doesn't need training
-                self.needs_training = False
+                # HNSW index
+                M = self.config.get("M", 32)
+                self._index = faiss.IndexHNSWFlat(self.dimension, M, faiss_metric)
+                self._index.hnsw.efConstruction = self.config.get("efConstruction", 200)
+                self._index.hnsw.efSearch = self.config.get("efSearch", 128)
             
             else:
-                logger.warning(f"Unknown index type: {index_type}, using flat index")
-                self.index = faiss.IndexFlatIP(self.dimension) if faiss_metric == faiss.METRIC_INNER_PRODUCT else faiss.IndexFlatL2(self.dimension)
-                self.needs_training = False
+                # Default to flat index
+                logger.warning(f"Unsupported index type: {index_type}, using flat")
+                self._index = faiss.IndexFlatIP(self.dimension) if faiss_metric == faiss.METRIC_INNER_PRODUCT else faiss.IndexFlatL2(self.dimension)
             
-            # Store configuration
-            self.index_type = index_type
-            self.faiss_metric = faiss_metric
-            
-            # Set search parameters if specified
-            if index_type == "ivf" or index_type == "ivfpq":
-                nprobe = self.config.get("parameters", {}).get("nprobe")
-                if nprobe:
-                    self.index.nprobe = nprobe
-            
-            elif index_type == "hnsw":
-                efSearch = self.config.get("parameters", {}).get("efSearch")
-                if efSearch:
-                    self.index.hnsw.efSearch = efSearch
-            
-            logger.info(f"Initialized FAISS index of type {index_type} with dimension {self.dimension}")
+            logger.info(f"Initialized FAISS index: {self._index}")
         
         except ImportError:
-            logger.error("FAISS not found. Please install FAISS: pip install faiss-cpu or faiss-gpu")
+            logger.error("FAISS not installed. Please install with: pip install faiss-cpu or faiss-gpu")
             raise
     
-    def add_embeddings(self, 
-                      embeddings: List[Dict[str, Any]],
-                      train_if_needed: bool = True) -> List[int]:
+    def add_embeddings(self, embeddings_data: List[Dict[str, Any]]) -> List[str]:
         """
-        Add embeddings to the index.
+        Add multiple embeddings to index.
         
         Args:
-            embeddings: List of embeddings with metadata
-            train_if_needed: Whether to train index if needed
+            embeddings_data: List of dictionaries with id, embedding, and optional metadata
             
         Returns:
-            List of assigned IDs
+            List of IDs of added embeddings
         """
-        if not embeddings:
-            return []
-        
-        # Extract vectors and metadata
+        # Extract vectors, IDs, and metadata
         vectors = []
-        uuids = []
+        ids = []
         metadata_list = []
         
-        for i, item in enumerate(embeddings):
-            # Get embedding
-            if "embedding" not in item:
-                logger.warning(f"Embedding missing for item {i}")
+        for item in embeddings_data:
+            # Extract embedding vector
+            vector = item.get("embedding")
+            if vector is None:
+                logger.warning(f"Skipping item without embedding: {item.get('id')}")
                 continue
-            
-            vector = item["embedding"]
             
             # Convert to numpy array if needed
             if not isinstance(vector, np.ndarray):
-                vector = np.array(vector, dtype=np.float32)
+                try:
+                    vector = np.array(vector, dtype=np.float32)
+                except:
+                    logger.warning(f"Could not convert embedding to numpy array: {item.get('id')}")
+                    continue
             
-            # Ensure correct shape
+            # Ensure vector has correct dimension
             if vector.shape != (self.dimension,):
-                logger.warning(f"Embedding has wrong dimension: {vector.shape} vs {self.dimension}")
+                logger.warning(f"Vector has wrong dimension {vector.shape}, expected ({self.dimension},)")
                 continue
             
-            # Normalize if using cosine similarity
-            if self.normalize:
-                vector = self._normalize_vector(vector)
+            # Generate ID if not provided
+            item_id = item.get("id")
+            if item_id is None:
+                import uuid
+                item_id = str(uuid.uuid4())
             
-            # Get UUID
-            uuid_str = item.get("id", str(uuid.uuid4()))
-            
-            # Get metadata
+            # Extract metadata
             metadata = {
-                "id": uuid_str,
+                "id": item_id,
                 "content": item.get("content", ""),
             }
             
-            # Add any other metadata
+            # Add additional metadata if provided
             if "metadata" in item:
                 metadata.update(item["metadata"])
             
-            # Add to lists
-            vectors.append(vector)
-            uuids.append(uuid_str)
+            # Append to lists
+            vectors.append(vector.astype(np.float32))
+            ids.append(item_id)
             metadata_list.append(metadata)
         
-        # Convert vectors to numpy array
+        if not vectors:
+            logger.warning("No valid embeddings to add")
+            return []
+        
+        # Convert to numpy array
         vectors_array = np.array(vectors, dtype=np.float32)
         
-        # Train index if needed
-        if self.needs_training and train_if_needed and not self.index.is_trained:
-            logger.info(f"Training index with {len(vectors)} vectors")
+        # Normalize vectors for cosine similarity if needed
+        if self.normalize:
+            vectors_array = self._normalize_vectors(vectors_array)
+        
+        # Check if the index requires training
+        if hasattr(self._index, 'ntotal') and self._index.ntotal == 0 and hasattr(self._index, 'train'):
+            if self._index.is_trained:
+                logger.info("Index already trained")
+            else:
+                logger.info(f"Training index with {len(vectors_array)} vectors")
+                try:
+                    self._index.train(vectors_array)
+                except Exception as e:
+                    logger.error(f"Error training index: {str(e)}")
+                    # Fall back to flat index
+                    self._reset_to_flat_index()
+                    self._index.add(vectors_array)
+        else:
+            # Add vectors to index
             try:
-                self.index.train(vectors_array)
+                self._index.add(vectors_array)
             except Exception as e:
-                logger.error(f"Error training index: {str(e)}")
-                raise
+                logger.error(f"Error adding vectors to index: {str(e)}")
+                # Fall back to flat index
+                self._reset_to_flat_index()
+                self._index.add(vectors_array)
         
-        # Add vectors to index
-        try:
-            # Get current size
-            current_size = self.index.ntotal
-            
-            # Add vectors
-            self.index.add(vectors_array)
-            
-            # Generate IDs
-            ids = list(range(current_size, current_size + len(vectors)))
-            
-            # Update UUID mapping and metadata
-            for i, (uuid_str, metadata) in enumerate(zip(uuids, metadata_list)):
-                faiss_id = ids[i]
-                self.uuid_to_id[uuid_str] = faiss_id
-                self.metadata[faiss_id] = metadata
-            
-            return ids
+        # Update internal storage
+        start_index = len(self.ids)
+        for i, item_id in enumerate(ids):
+            index = start_index + i
+            self.id_to_index[item_id] = index
+            self.ids.append(item_id)
+            self.vectors.append(vectors_array[i])
+            self.metadata.append(metadata_list[i])
         
-        except Exception as e:
-            logger.error(f"Error adding vectors to index: {str(e)}")
-            raise
+        logger.info(f"Added {len(vectors)} vectors to index, total: {len(self.ids)}")
+        
+        return ids
     
     def search(self, 
-              query_vector: Union[List[float], np.ndarray],
-              k: int = 5,
+              query_vector: np.ndarray, 
+              k: int = 5, 
               filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Search for similar vectors.
@@ -349,125 +340,231 @@ class AdvancedVectorIndex:
             filters: Metadata filters
             
         Returns:
-            List of search results
+            List of search results with id, score, and metadata
         """
-        start_time = time.time()
+        if len(self.ids) == 0:
+            logger.warning("Index is empty")
+            return []
         
-        # Convert query vector to numpy array if needed
+        # Ensure query vector has correct shape
         if not isinstance(query_vector, np.ndarray):
-            query_vector = np.array(query_vector, dtype=np.float32)
+            try:
+                query_vector = np.array(query_vector, dtype=np.float32)
+            except:
+                logger.error("Could not convert query to numpy array")
+                return []
         
-        # Ensure correct shape
+        # Ensure query vector has correct dimension
         if query_vector.shape != (self.dimension,):
-            query_vector = query_vector.reshape(1, -1)
-        else:
-            query_vector = query_vector.reshape(1, -1)
+            logger.error(f"Query vector has wrong dimension {query_vector.shape}, expected ({self.dimension},)")
+            return []
         
-        # Normalize if using cosine similarity
+        # Normalize query vector for cosine similarity if needed
         if self.normalize:
-            query_vector = self._normalize_vector(query_vector)
+            query_vector = self._normalize_vectors(query_vector.reshape(1, -1))[0]
         
+        # Reshape query vector if needed
+        if len(query_vector.shape) == 1:
+            query_vector = query_vector.reshape(1, -1)
+        
+        # Increase k if filters are used
+        search_k = k * 4 if filters else k
+        search_k = min(search_k, len(self.ids))
+        
+        # Perform search
         try:
-            # Perform search
-            scores, indices = self.index.search(query_vector, k)
-            
-            # Extract results
-            results = []
-            for i, (idx, score) in enumerate(zip(indices[0], scores[0])):
-                # Skip invalid indices
-                if idx == -1:
-                    continue
-                
-                # Get metadata
-                metadata = self.metadata.get(idx, {})
-                
-                # Apply filters
-                if filters and not self._apply_filters(metadata, filters):
-                    continue
-                
-                # Add to results
-                results.append({
-                    "id": metadata.get("id"),
-                    "score": float(score),
-                    "metadata": metadata,
-                    "content": metadata.get("content", "")
-                })
-            
-            search_time = time.time() - start_time
-            self.search_times.append(search_time)
-            
-            return results
-        
+            scores, indices = self._index.search(query_vector, search_k)
         except Exception as e:
             logger.error(f"Error searching index: {str(e)}")
             return []
+        
+        # Convert to flat lists
+        scores = scores[0].tolist()
+        indices = indices[0].tolist()
+        
+        # Prepare results
+        results = []
+        for i, idx in enumerate(indices):
+            if idx == -1:  # FAISS returns -1 for not enough results
+                continue
+            
+            # Get metadata
+            item_metadata = self.metadata[idx]
+            
+            # Apply filters
+            if filters and not self._matches_filters(item_metadata, filters):
+                continue
+            
+            # Add to results
+            result = {
+                "id": self.ids[idx],
+                "score": float(scores[i]),
+                "metadata": item_metadata
+            }
+            
+            # Add content if available
+            if "content" in item_metadata:
+                result["content"] = item_metadata["content"]
+            
+            results.append(result)
+            
+            # Stop after k results
+            if len(results) >= k:
+                break
+        
+        return results
     
-    def search_by_uuid(self, 
-                      uuid_str: str,
-                      k: int = 5,
-                      filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def _matches_filters(self, metadata: Dict[str, Any], filters: Dict[str, Any]) -> bool:
         """
-        Search for similar vectors by UUID.
+        Check if metadata matches filters.
         
         Args:
-            uuid_str: UUID of vector to search for
-            k: Number of results
+            metadata: Item metadata
             filters: Metadata filters
             
         Returns:
-            List of search results
+            Whether metadata matches filters
         """
-        # Get FAISS ID
-        faiss_id = self.uuid_to_id.get(uuid_str)
-        
-        if faiss_id is None:
-            logger.warning(f"UUID not found: {uuid_str}")
-            return []
-        
-        try:
-            import faiss
+        for key, value in filters.items():
+            # Handle nested keys with dot notation
+            if "." in key:
+                parts = key.split(".")
+                current = metadata
+                for part in parts[:-1]:
+                    if part not in current:
+                        return False
+                    current = current[part]
+                
+                if parts[-1] not in current or current[parts[-1]] != value:
+                    return False
             
-            # Get vector
-            vector = faiss.reconstruct(self.index, faiss_id)
-            
-            # Search
-            return self.search(vector, k=k, filters=filters)
+            # Handle simple keys
+            elif key not in metadata or metadata[key] != value:
+                return False
         
-        except Exception as e:
-            logger.error(f"Error searching by UUID: {str(e)}")
-            return []
+        return True
     
-    def delete(self, uuids: List[str]) -> bool:
+    def _normalize_vectors(self, vectors: np.ndarray) -> np.ndarray:
         """
-        Delete vectors from index.
+        Normalize vectors for cosine similarity.
         
         Args:
-            uuids: List of UUIDs to delete
+            vectors: Vectors to normalize
             
         Returns:
-            Success status
+            Normalized vectors
+        """
+        # Calculate norm
+        norm = np.linalg.norm(vectors, axis=1, keepdims=True)
+        
+        # Handle zero norm
+        norm = np.maximum(norm, 1e-12)
+        
+        # Normalize
+        return vectors / norm
+    
+    def _reset_to_flat_index(self) -> None:
+        """Reset to flat index when complex index fails."""
+        try:
+            import faiss
+            
+            logger.warning("Resetting to flat index")
+            
+            if self.metric == "cosine" or self.metric == "ip":
+                self._index = faiss.IndexFlatIP(self.dimension)
+            else:
+                self._index = faiss.IndexFlatL2(self.dimension)
+            
+            # Re-add vectors if available
+            if self.vectors:
+                vectors_array = np.array(self.vectors, dtype=np.float32)
+                self._index.add(vectors_array)
+        
+        except Exception as e:
+            logger.error(f"Error resetting to flat index: {str(e)}")
+    
+    def save(self, path: str) -> None:
+        """
+        Save index to file.
+        
+        Args:
+            path: Path to save file
         """
         try:
             import faiss
             
-            # Check if index supports removal
-            if not hasattr(self.index, "remove_ids"):
-                logger.warning("This index type doesn't support removal")
-                return False
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             
-            # Convert UUIDs to FAISS IDs
-            ids = []
-            for uuid_str in uuids:
-                faiss_id = self.uuid_to_id.get(uuid_str)
-                if faiss_id is not None:
-                    ids.append(faiss_id)
+            # Prepare data to save
+            data = {
+                "dimension": self.dimension,
+                "metric": self.metric,
+                "config": self.config,
+                "ids": self.ids,
+                "id_to_index": self.id_to_index,
+                "metadata": self.metadata,
+                "normalize": self.normalize
+            }
             
-            if not ids:
-                logger.warning("No valid IDs to remove")
-                return False
+            # Save data and index
+            with open(path + ".data", "wb") as f:
+                pickle.dump(data, f)
             
-            # Create ID array
-            id_array = np.array(ids, dtype=np.int64)
+            faiss.write_index(self._index, path + ".index")
             
-            # Remove from index
+            logger.info(f"Index saved to {path}")
+        
+        except Exception as e:
+            logger.error(f"Error saving index: {str(e)}")
+            raise
+    
+    @classmethod
+    def load(cls, path: str) -> 'AdvancedVectorIndex':
+        """
+        Load index from file.
+        
+        Args:
+            path: Path to load file
             
+        Returns:
+            Loaded vector index
+        """
+        try:
+            import faiss
+            
+            # Load data
+            with open(path + ".data", "rb") as f:
+                data = pickle.load(f)
+            
+            # Create instance
+            index = cls(
+                dimension=data["dimension"],
+                metric=data["metric"],
+                config=data["config"]
+            )
+            
+            # Load FAISS index
+            index._index = faiss.read_index(path + ".index")
+            
+            # Restore data
+            index.ids = data["ids"]
+            index.id_to_index = data["id_to_index"]
+            index.metadata = data["metadata"]
+            index.normalize = data["normalize"]
+            
+            # Reconstruct vectors if needed
+            if hasattr(index._index, "reconstruct"):
+                index.vectors = []
+                for i in range(len(index.ids)):
+                    vector = np.zeros((index.dimension,), dtype=np.float32)
+                    index._index.reconstruct(i, vector)
+                    index.vectors.append(vector)
+            
+            logger.info(f"Index loaded from {path} with {len(index.ids)} vectors")
+            
+            return index
+        
+        except Exception as e:
+            logger.error(f"Error loading index: {str(e)}")
+            raise

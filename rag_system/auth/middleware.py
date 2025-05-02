@@ -1,204 +1,186 @@
 """
-Authentication and authorization middleware.
+Authentication middleware.
 """
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Callable, Union
+from functools import wraps
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
-from pydantic import BaseModel
+from fastapi import Depends, HTTPException, Header, status
+from jose import JWTError
 from sqlalchemy.orm import Session
 
+from .auth_service import decode_token, verify_api_key
 from ..database.document_store import get_db
-from ..database.models import User
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 
-# OAuth2 scheme
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl=f"/api/{settings.API_VERSION}/auth/token"
-)
-
-# Models
-class TokenData(BaseModel):
-    """Token data model."""
-    sub: str
-    exp: datetime
-    is_admin: bool = False
-    is_moderator: bool = False
-
-
-def create_access_token(
-    data: Dict[str, Any], 
-    expires_delta: Optional[timedelta] = None
-) -> str:
+async def get_token_from_header(
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None)
+) -> Dict[str, Any]:
     """
-    Create JWT access token.
+    Get token data from authorization header.
     
     Args:
-        data: Token data
-        expires_delta: Token expiration timedelta
+        authorization: Authorization header
+        x_api_key: API key header
         
     Returns:
-        JWT token
+        Token data
+        
+    Raises:
+        HTTPException: If no valid authentication provided
     """
-    to_encode = data.copy()
+    # Check for API key first
+    if x_api_key:
+        # Return stub data for now, will be verified by verify_api_key
+        return {"type": "api_key", "key": x_api_key}
     
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    # Check for JWT token
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.replace("Bearer ", "")
+        # Return stub data for now, will be verified by decode_token
+        return {"type": "bearer", "token": token}
     
-    to_encode.update({"exp": expire})
-    
-    encoded_jwt = jwt.encode(
-        to_encode, 
-        settings.SECRET_KEY, 
-        algorithm=settings.ALGORITHM
+    # No valid authentication
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
     )
-    
-    return encoded_jwt
 
-
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+async def auth_middleware(
+    token_data: Dict[str, Any] = Depends(get_token_from_header),
     db: Session = Depends(get_db)
-) -> Optional[User]:
+) -> Dict[str, Any]:
     """
-    Get current user from token.
+    Authentication middleware.
     
     Args:
-        token: JWT token
+        token_data: Token data
         db: Database session
         
     Returns:
-        User model or None
-    
+        User information
+        
     Raises:
-        HTTPException: If token is invalid
+        HTTPException: If authentication fails
     """
-    credentials_exception = HTTPException(
+    if token_data["type"] == "bearer":
+        try:
+            # Decode JWT token
+            payload = decode_token(token_data["token"])
+            return payload
+        except JWTError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    
+    elif token_data["type"] == "api_key":
+        try:
+            # Verify API key
+            api_key_info = await verify_api_key(token_data["key"], db=db)
+            return api_key_info
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(e),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    
+    # Unknown token type
+    raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Invalid authentication credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
-    try:
-        # Decode token
-        payload = jwt.decode(
-            token, 
-            settings.SECRET_KEY, 
-            algorithms=[settings.ALGORITHM]
-        )
-        
-        # Get subject (user ID)
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-        
-        # Create token data
-        token_data = TokenData(
-            sub=user_id,
-            exp=datetime.fromtimestamp(payload.get("exp")),
-            is_admin=payload.get("is_admin", False),
-            is_moderator=payload.get("is_moderator", False)
-        )
-        
-        # Check if token has expired
-        if datetime.utcnow() > token_data.exp:
-            raise credentials_exception
-        
-    except JWTError:
-        raise credentials_exception
-    
-    # Get user from database
-    user = db.query(User).filter(
-        User.id == token_data.sub,
-        User.is_active == True
-    ).first()
-    
-    if user is None:
-        raise credentials_exception
-    
-    return user
 
-
-def admin_required(
-    user: User = Depends(get_current_user)
-) -> Dict[str, Any]:
+def user_required(token: Dict[str, Any] = Depends(auth_middleware)) -> Dict[str, Any]:
     """
-    Dependency for admin-only endpoints.
+    Require authenticated user.
     
     Args:
-        user: Current user
+        token: Token data
         
     Returns:
-        User token data
+        User information
+        
+    Raises:
+        HTTPException: If user is not authenticated
+    """
+    return token
+
+def admin_required(token: Dict[str, Any] = Depends(auth_middleware)) -> Dict[str, Any]:
+    """
+    Require admin user.
     
+    Args:
+        token: Token data
+        
+    Returns:
+        User information
+        
     Raises:
         HTTPException: If user is not an admin
     """
-    if not user.is_admin:
+    if not token.get("is_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions"
+            detail="Admin role required"
         )
     
-    return {
-        "user_id": user.id,
-        "username": user.username,
-        "is_admin": user.is_admin,
-        "is_moderator": user.is_moderator
-    }
+    return token
 
-
-def admin_or_moderator(
-    user: User = Depends(get_current_user)
-) -> Dict[str, Any]:
+def moderator_required(token: Dict[str, Any] = Depends(auth_middleware)) -> Dict[str, Any]:
     """
-    Dependency for admin or moderator endpoints.
+    Require moderator or admin user.
     
     Args:
-        user: Current user
+        token: Token data
         
     Returns:
-        User token data
-    
+        User information
+        
     Raises:
-        HTTPException: If user is not an admin or moderator
+        HTTPException: If user is not a moderator or admin
     """
-    if not user.is_admin and not user.is_moderator:
+    if not (token.get("is_admin") or token.get("is_moderator")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions"
+            detail="Moderator role required"
         )
     
-    return {
-        "user_id": user.id,
-        "username": user.username,
-        "is_admin": user.is_admin,
-        "is_moderator": user.is_moderator
-    }
+    return token
 
-
-def user_required(
-    user: User = Depends(get_current_user)
-) -> Dict[str, Any]:
+def scopes_required(required_scopes: list) -> Callable:
     """
-    Dependency for authenticated user endpoints.
+    Require specific API key scopes.
     
     Args:
-        user: Current user
+        required_scopes: Required scopes
         
     Returns:
-        User token data
+        Dependency function
     """
-    return {
-        "user_id": user.id,
-        "username": user.username,
-        "is_admin": user.is_admin,
-        "is_moderator": user.is_moderator
-    }
+    def dependency(token: Dict[str, Any] = Depends(auth_middleware)) -> Dict[str, Any]:
+        # Check if using API key
+        if "scopes" in token:
+            has_scopes = all(scope in token["scopes"] for scope in required_scopes)
+            if not has_scopes:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Required scopes: {', '.join(required_scopes)}"
+                )
+        
+        # If using JWT, admin can access everything
+        elif not token.get("is_admin"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Required scopes: {', '.join(required_scopes)}"
+            )
+        
+        return token
+    
+    return dependency

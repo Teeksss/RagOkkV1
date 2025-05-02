@@ -1,26 +1,519 @@
 """
-Cache manager for coordinating different caching mechanisms.
+Cache manager for different caching strategies.
 """
 import logging
+import os
 import time
 import json
-import hashlib
-from typing import Dict, Any, Optional, List, Union, Tuple, Callable
-import threading
-import os
 import pickle
-import numpy as np
-
-from ..utils.caching import TTLCache, DiskCache, EmbeddingCache
+from typing import Dict, Any, Optional, Union, Generic, TypeVar, Callable
+import hashlib
 
 logger = logging.getLogger(__name__)
 
-class CacheManager:
+# Type variables
+T = TypeVar('T')
+
+
+class MemoryCache:
     """
-    Manager for coordinating different caching mechanisms.
+    In-memory cache.
     """
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, ttl: int = 3600, max_size: int = 1000):
+        """
+        Initialize memory cache.
+        
+        Args:
+            ttl: Time-to-live in seconds
+            max_size: Maximum cache size
+        """
+        self.ttl = ttl
+        self.max_size = max_size
+        self._cache: Dict[str, Dict[str, Any]] = {}
+    
+    def get(self, key: str) -> Any:
+        """
+        Get value from cache.
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            Cached value or None
+        """
+        if key in self._cache:
+            # Check if expired
+            if self._cache[key]["expires_at"] < time.time():
+                # Remove expired entry
+                del self._cache[key]
+                return None
+            
+            # Return value
+            return self._cache[key]["value"]
+        
+        return None
+    
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """
+        Set value in cache.
+        
+        Args:
+            key: Cache key
+            value: Value to cache
+            ttl: Time-to-live in seconds (overrides default)
+        """
+        # Prune cache if needed
+        if len(self._cache) >= self.max_size:
+            self._prune_cache()
+        
+        # Set value
+        self._cache[key] = {
+            "value": value,
+            "expires_at": time.time() + (ttl or self.ttl)
+        }
+    
+    def delete(self, key: str) -> None:
+        """
+        Delete value from cache.
+        
+        Args:
+            key: Cache key
+        """
+        if key in self._cache:
+            del self._cache[key]
+    
+    def clear(self) -> None:
+        """Clear cache."""
+        self._cache.clear()
+    
+    def _prune_cache(self) -> None:
+        """Prune cache by removing expired and oldest entries."""
+        # Remove expired entries
+        current_time = time.time()
+        expired_keys = [
+            k for k, v in self._cache.items() 
+            if v["expires_at"] < current_time
+        ]
+        
+        for key in expired_keys:
+            del self._cache[key]
+        
+        # If still too large, remove oldest entries
+        if len(self._cache) >= self.max_size:
+            # Sort by expiration time
+            sorted_items = sorted(
+                self._cache.items(), 
+                key=lambda x: x[1]["expires_at"]
+            )
+            
+            # Remove oldest 20%
+            num_to_remove = int(len(sorted_items) * 0.2)
+            for key, _ in sorted_items[:num_to_remove]:
+                del self._cache[key]
+
+
+class DiskCache:
+    """
+    Disk-based cache.
+    """
+    
+    def __init__(self, 
+                cache_dir: str = "./cache", 
+                ttl: int = 86400, 
+                max_size_mb: int = 1024):
+        """
+        Initialize disk cache.
+        
+        Args:
+            cache_dir: Cache directory
+            ttl: Time-to-live in seconds
+            max_size_mb: Maximum cache size in MB
+        """
+        self.cache_dir = cache_dir
+        self.ttl = ttl
+        self.max_size_mb = max_size_mb
+        
+        # Create cache directory
+        os.makedirs(cache_dir, exist_ok=True)
+    
+    def get(self, key: str) -> Any:
+        """
+        Get value from cache.
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            Cached value or None
+        """
+        # Generate file path
+        file_path = self._get_file_path(key)
+        
+        if not os.path.exists(file_path):
+            return None
+        
+        try:
+            # Check if expired
+            if self._is_expired(file_path):
+                # Remove expired file
+                os.remove(file_path)
+                return None
+            
+            # Read file
+            with open(file_path, "rb") as f:
+                value = pickle.load(f)
+            
+            return value
+        
+        except Exception as e:
+            logger.error(f"Error reading from disk cache: {str(e)}")
+            return None
+    
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """
+        Set value in cache.
+        
+        Args:
+            key: Cache key
+            value: Value to cache
+            ttl: Time-to-live in seconds (overrides default)
+        """
+        # Prune cache if needed
+        if self._get_cache_size_mb() > self.max_size_mb:
+            self._prune_cache()
+        
+        # Generate file path
+        file_path = self._get_file_path(key)
+        
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            # Write file
+            with open(file_path, "wb") as f:
+                pickle.dump(value, f)
+            
+            # Set expiration time
+            expiration_time = time.time() + (ttl or self.ttl)
+            with open(f"{file_path}.meta", "w") as f:
+                json.dump({"expires_at": expiration_time}, f)
+        
+        except Exception as e:
+            logger.error(f"Error writing to disk cache: {str(e)}")
+    
+    def delete(self, key: str) -> None:
+        """
+        Delete value from cache.
+        
+        Args:
+            key: Cache key
+        """
+        # Generate file path
+        file_path = self._get_file_path(key)
+        
+        try:
+            # Remove files
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            
+            if os.path.exists(f"{file_path}.meta"):
+                os.remove(f"{file_path}.meta")
+        
+        except Exception as e:
+            logger.error(f"Error deleting from disk cache: {str(e)}")
+    
+    def clear(self) -> None:
+        """Clear cache."""
+        try:
+            # Remove all files in cache directory
+            for root, dirs, files in os.walk(self.cache_dir):
+                for file in files:
+                    os.remove(os.path.join(root, file))
+        
+        except Exception as e:
+            logger.error(f"Error clearing disk cache: {str(e)}")
+    
+    def _get_file_path(self, key: str) -> str:
+        """
+        Get file path for key.
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            File path
+        """
+        # Hash key
+        key_hash = hashlib.md5(key.encode()).hexdigest()
+        
+        # Split hash for directory structure
+        hash_dirs = [key_hash[i:i+2] for i in range(0, 6, 2)]
+        
+        # Generate path
+        path_parts = [self.cache_dir] + hash_dirs + [key_hash[6:]]
+        
+        return os.path.join(*path_parts)
+    
+    def _is_expired(self, file_path: str) -> bool:
+        """
+        Check if file is expired.
+        
+        Args:
+            file_path: File path
+            
+        Returns:
+            Whether file is expired
+        """
+        meta_path = f"{file_path}.meta"
+        
+        if not os.path.exists(meta_path):
+            return True
+        
+        try:
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            
+            return meta.get("expires_at", 0) < time.time()
+        
+        except:
+            return True
+    
+    def _get_cache_size_mb(self) -> float:
+        """
+        Get cache size in MB.
+        
+        Returns:
+            Cache size in MB
+        """
+        total_size = 0
+        
+        for root, dirs, files in os.walk(self.cache_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                total_size += os.path.getsize(file_path)
+        
+        return total_size / (1024 * 1024)
+    
+    def _prune_cache(self) -> None:
+        """Prune cache by removing expired and oldest entries."""
+        # Get all files with metadata
+        all_files = []
+        
+        for root, dirs, files in os.walk(self.cache_dir):
+            for file in files:
+                if not file.endswith(".meta"):
+                    file_path = os.path.join(root, file)
+                    meta_path = f"{file_path}.meta"
+                    
+                    if os.path.exists(meta_path):
+                        try:
+                            with open(meta_path, "r") as f:
+                                meta = json.load(f)
+                            
+                            all_files.append({
+                                "path": file_path,
+                                "meta_path": meta_path,
+                                "expires_at": meta.get("expires_at", 0),
+                                "size": os.path.getsize(file_path) + os.path.getsize(meta_path)
+                            })
+                        
+                        except:
+                            pass
+        
+        # Remove expired files
+        current_time = time.time()
+        for file_info in all_files:
+            if file_info["expires_at"] < current_time:
+                try:
+                    os.remove(file_info["path"])
+                    os.remove(file_info["meta_path"])
+                except:
+                    pass
+        
+        # If still too large, remove oldest files
+        if self._get_cache_size_mb() > self.max_size_mb:
+            # Sort by expiration time
+            all_files = [f for f in all_files if os.path.exists(f["path"])]
+            all_files.sort(key=lambda x: x["expires_at"])
+            
+            # Remove oldest files until under limit
+            for file_info in all_files:
+                try:
+                    os.remove(file_info["path"])
+                    os.remove(file_info["meta_path"])
+                except:
+                    pass
+                
+                if self._get_cache_size_mb() <= self.max_size_mb:
+                    break
+
+
+class RedisCache:
+    """
+    Redis-based cache.
+    """
+    
+    def __init__(self, 
+                host: str = "localhost", 
+                port: int = 6379, 
+                db: int = 0, 
+                password: Optional[str] = None,
+                prefix: str = "cache:",
+                ttl: int = 3600):
+        """
+        Initialize Redis cache.
+        
+        Args:
+            host: Redis host
+            port: Redis port
+            db: Redis database
+            password: Redis password
+            prefix: Key prefix
+            ttl: Time-to-live in seconds
+        """
+        self.host = host
+        self.port = port
+        self.db = db
+        self.password = password
+        self.prefix = prefix
+        self.ttl = ttl
+        self._redis = None
+    
+    def _connect(self) -> None:
+        """Connect to Redis."""
+        try:
+            import redis
+            
+            self._redis = redis.Redis(
+                host=self.host,
+                port=self.port,
+                db=self.db,
+                password=self.password,
+                decode_responses=False
+            )
+            
+            # Test connection
+            self._redis.ping()
+        
+        except ImportError:
+            logger.error("Redis package not installed. Please install with: pip install redis")
+            raise
+        
+        except Exception as e:
+            logger.error(f"Error connecting to Redis: {str(e)}")
+            self._redis = None
+            raise
+    
+    def get(self, key: str) -> Any:
+        """
+        Get value from cache.
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            Cached value or None
+        """
+        if not self._redis:
+            try:
+                self._connect()
+            except:
+                return None
+        
+        try:
+            # Get value
+            value = self._redis.get(f"{self.prefix}{key}")
+            
+            if value is None:
+                return None
+            
+            # Deserialize
+            return pickle.loads(value)
+        
+        except Exception as e:
+            logger.error(f"Error getting from Redis cache: {str(e)}")
+            return None
+    
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """
+        Set value in cache.
+        
+        Args:
+            key: Cache key
+            value: Value to cache
+            ttl: Time-to-live in seconds (overrides default)
+        """
+        if not self._redis:
+            try:
+                self._connect()
+            except:
+                return
+        
+        try:
+            # Serialize
+            serialized = pickle.dumps(value)
+            
+            # Set value
+            self._redis.set(
+                f"{self.prefix}{key}",
+                serialized,
+                ex=(ttl or self.ttl)
+            )
+        
+        except Exception as e:
+            logger.error(f"Error setting in Redis cache: {str(e)}")
+    
+    def delete(self, key: str) -> None:
+        """
+        Delete value from cache.
+        
+        Args:
+            key: Cache key
+        """
+        if not self._redis:
+            try:
+                self._connect()
+            except:
+                return
+        
+        try:
+            # Delete key
+            self._redis.delete(f"{self.prefix}{key}")
+        
+        except Exception as e:
+            logger.error(f"Error deleting from Redis cache: {str(e)}")
+    
+    def clear(self) -> None:
+        """Clear cache."""
+        if not self._redis:
+            try:
+                self._connect()
+            except:
+                return
+        
+        try:
+            # Delete all keys with prefix
+            cursor = 0
+            while True:
+                cursor, keys = self._redis.scan(cursor, f"{self.prefix}*", 100)
+                
+                if keys:
+                    self._redis.delete(*keys)
+                
+                if cursor == 0:
+                    break
+        
+        except Exception as e:
+            logger.error(f"Error clearing Redis cache: {str(e)}")
+
+
+class CacheManager:
+    """
+    Cache manager for different caching strategies.
+    """
+    
+    def __init__(self, config: Dict[str, Any] = None):
         """
         Initialize cache manager.
         
@@ -29,350 +522,129 @@ class CacheManager:
         """
         self.config = config or {}
         
-        # Initialize caches
-        self._initialize_caches()
-    
-    def _initialize_caches(self) -> None:
-        """Initialize different cache types."""
-        # Query cache (in-memory)
-        query_config = self.config.get("query_cache", {})
-        self.query_cache = TTLCache(
-            ttl=query_config.get("ttl", 300),  # 5 minutes
-            max_size=query_config.get("max_size", 1000)
+        # Memory caches
+        self.query_cache = MemoryCache(
+            ttl=self.config.get("query_cache", {}).get("ttl", 3600),
+            max_size=self.config.get("query_cache", {}).get("max_size", 1000)
         )
         
-        # Embedding cache
-        embedding_config = self.config.get("embedding_cache", {})
-        self.embedding_cache = EmbeddingCache(
-            use_disk_cache=embedding_config.get("use_disk_cache", False),
-            cache_dir=embedding_config.get("cache_dir"),
-            ttl=embedding_config.get("ttl", 86400 * 7),  # 1 week
-            max_size=embedding_config.get("max_size", 10000)
-        )
-        
-        # Document cache (disk-based)
-        document_config = self.config.get("document_cache", {})
+        # Disk cache for documents
         self.document_cache = DiskCache(
-            cache_dir=document_config.get("cache_dir", ".cache/documents"),
-            ttl=document_config.get("ttl", 86400 * 3),  # 3 days
-            max_size_mb=document_config.get("max_size_mb", 1024)  # 1 GB
+            cache_dir=self.config.get("document_cache", {}).get("cache_dir", "./cache/documents"),
+            ttl=self.config.get("document_cache", {}).get("ttl", 86400),
+            max_size_mb=self.config.get("document_cache", {}).get("max_size_mb", 1024)
         )
         
-        # Redis cache (optional)
-        redis_config = self.config.get("redis_cache", {})
-        self.redis_enabled = redis_config.get("enabled", False)
+        # Either memory or disk cache for embeddings
+        use_disk_cache = self.config.get("embedding_cache", {}).get("use_disk_cache", False)
         
-        if self.redis_enabled:
-            self._initialize_redis(redis_config)
-    
-    def _initialize_redis(self, redis_config: Dict[str, Any]) -> None:
-        """
-        Initialize Redis cache.
-        
-        Args:
-            redis_config: Redis configuration
-        """
-        try:
-            import redis
-            
-            self.redis = redis.Redis(
-                host=redis_config.get("host", "localhost"),
-                port=redis_config.get("port", 6379),
-                db=redis_config.get("db", 0),
-                password=redis_config.get("password"),
-                decode_responses=False,  # Keep binary for pickle compatibility
-                socket_timeout=redis_config.get("socket_timeout", 5),
-                socket_connect_timeout=redis_config.get("socket_connect_timeout", 5)
+        if use_disk_cache:
+            self.embedding_cache = DiskCache(
+                cache_dir=self.config.get("embedding_cache", {}).get("cache_dir", "./cache/embeddings"),
+                ttl=self.config.get("embedding_cache", {}).get("ttl", 604800),  # 7 days
+                max_size_mb=self.config.get("embedding_cache", {}).get("max_size_mb", 2048)
             )
-            
-            self.redis_prefix = redis_config.get("prefix", "rag:")
-            self.redis_ttl = redis_config.get("ttl", 3600)  # 1 hour
-            
-            # Test connection
-            self.redis.ping()
-            logger.info("Redis cache initialized successfully")
-            
-        except ImportError:
-            logger.warning("Redis package not installed, Redis caching disabled")
-            self.redis_enabled = False
+        else:
+            self.embedding_cache = MemoryCache(
+                ttl=self.config.get("embedding_cache", {}).get("ttl", 3600 * 24),
+                max_size=self.config.get("embedding_cache", {}).get("max_size", 10000)
+            )
         
-        except Exception as e:
-            logger.warning(f"Failed to initialize Redis cache: {str(e)}")
-            self.redis_enabled = False
-    
-    def get_query_cache_key(self, query: str, params: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Generate cache key for query.
-        
-        Args:
-            query: Query string
-            params: Query parameters
-            
-        Returns:
-            Cache key
-        """
-        # Create key parts
-        key_parts = ["query", query]
-        
-        # Add params if provided
-        if params:
-            # Sort params for consistent keys
-            param_str = json.dumps(params, sort_keys=True)
-            key_parts.append(param_str)
-        
-        # Join parts
-        key = ":".join(key_parts)
-        
-        # Hash if key is too long
-        if len(key) > 250:
-            key = hashlib.md5(key.encode()).hexdigest()
-        
-        return key
-    
-    def get_query_result(self, 
-                       query: str, 
-                       params: Optional[Dict[str, Any]] = None) -> Tuple[Any, bool]:
-        """
-        Get query result from cache.
-        
-        Args:
-            query: Query string
-            params: Query parameters
-            
-        Returns:
-            Tuple of (result, hit status)
-        """
-        # Generate cache key
-        cache_key = self.get_query_cache_key(query, params)
-        
-        # Check in-memory cache first
-        result, hit = self.query_cache.get(cache_key)
-        if hit:
-            logger.debug(f"Query cache hit: {query}")
-            return result, True
-        
-        # If Redis enabled, check Redis
-        if self.redis_enabled:
+        # Redis cache
+        redis_config = self.config.get("redis_cache", {})
+        if redis_config.get("enabled", False):
             try:
-                redis_key = f"{self.redis_prefix}query:{cache_key}"
-                
-                # Get from Redis
-                redis_result = self.redis.get(redis_key)
-                
-                if redis_result:
-                    # Deserialize result
-                    result = pickle.loads(redis_result)
-                    
-                    # Also cache in memory for faster access next time
-                    self.query_cache.put(cache_key, result)
-                    
-                    logger.debug(f"Redis query cache hit: {query}")
-                    return result, True
-            
-            except Exception as e:
-                logger.warning(f"Error accessing Redis cache: {str(e)}")
-        
-        return None, False
-    
-    def set_query_result(self, 
-                        query: str, 
-                        result: Any, 
-                        params: Optional[Dict[str, Any]] = None,
-                        ttl: Optional[int] = None) -> None:
-        """
-        Set query result in cache.
-        
-        Args:
-            query: Query string
-            result: Query result
-            params: Query parameters
-            ttl: Time-to-live in seconds
-        """
-        # Generate cache key
-        cache_key = self.get_query_cache_key(query, params)
-        
-        # Set in-memory cache
-        self.query_cache.put(cache_key, result, ttl)
-        
-        # If Redis enabled, set in Redis too
-        if self.redis_enabled:
-            try:
-                redis_key = f"{self.redis_prefix}query:{cache_key}"
-                
-                # Serialize result
-                serialized = pickle.dumps(result)
-                
-                # Set in Redis
-                self.redis.set(
-                    redis_key,
-                    serialized,
-                    ex=ttl if ttl is not None else self.redis_ttl
+                self.redis_cache = RedisCache(
+                    host=redis_config.get("host", "localhost"),
+                    port=redis_config.get("port", 6379),
+                    db=redis_config.get("db", 0),
+                    password=redis_config.get("password"),
+                    prefix=redis_config.get("prefix", "rag:"),
+                    ttl=redis_config.get("ttl", 3600)
                 )
-            
-            except Exception as e:
-                logger.warning(f"Error setting Redis cache: {str(e)}")
-    
-    def get_embedding(self, 
-                    text: str, 
-                    model_name: str = "default") -> Tuple[Optional[np.ndarray], bool]:
-        """
-        Get embedding from cache.
-        
-        Args:
-            text: Input text
-            model_name: Model name
-            
-        Returns:
-            Tuple of (embedding, hit status)
-        """
-        return self.embedding_cache.get(text, model_name)
-    
-    def set_embedding(self, 
-                    text: str, 
-                    embedding: np.ndarray, 
-                    model_name: str = "default") -> None:
-        """
-        Set embedding in cache.
-        
-        Args:
-            text: Input text
-            embedding: Embedding vector
-            model_name: Model name
-        """
-        self.embedding_cache.put(text, embedding, model_name)
-    
-    def get_document(self, document_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
-        """
-        Get document from cache.
-        
-        Args:
-            document_id: Document ID
-            
-        Returns:
-            Tuple of (document, hit status)
-        """
-        # Generate cache key
-        cache_key = f"document:{document_id}"
-        
-        # Get from cache
-        return self.document_cache.get(cache_key)
-    
-    def set_document(self, 
-                   document_id: str, 
-                   document: Dict[str, Any], 
-                   ttl: Optional[int] = None) -> None:
-        """
-        Set document in cache.
-        
-        Args:
-            document_id: Document ID
-            document: Document data
-            ttl: Time-to-live in seconds
-        """
-        # Generate cache key
-        cache_key = f"document:{document_id}"
-        
-        # Set in cache
-        self.document_cache.put(cache_key, document, ttl)
-    
-    def invalidate_query_cache(self, query_pattern: Optional[str] = None) -> None:
-        """
-        Invalidate query cache.
-        
-        Args:
-            query_pattern: Optional query pattern to match (None for all)
-        """
-        # If no pattern, clear entire cache
-        if query_pattern is None:
-            self.query_cache.clear()
-            
-            # Clear Redis if enabled
-            if self.redis_enabled:
-                try:
-                    # Delete all keys matching prefix
-                    for key in self.redis.scan_iter(f"{self.redis_prefix}query:*"):
-                        self.redis.delete(key)
-                except Exception as e:
-                    logger.warning(f"Error clearing Redis cache: {str(e)}")
-        
-        else:
-            # TODO: Implement selective invalidation based on pattern
-            # This is complex with current implementation, so we'll just clear all for now
-            logger.warning("Selective cache invalidation not implemented, clearing all query cache")
-            self.invalidate_query_cache()
-    
-    def invalidate_document_cache(self, document_id: Optional[str] = None) -> None:
-        """
-        Invalidate document cache.
-        
-        Args:
-            document_id: Optional document ID (None for all)
-        """
-        if document_id is None:
-            # Clear entire cache
-            self.document_cache.clear()
-        else:
-            # Delete specific document
-            cache_key = f"document:{document_id}"
-            self.document_cache.delete(cache_key)
-    
-    def invalidate_embedding_cache(self) -> None:
-        """Invalidate embedding cache."""
-        self.embedding_cache.clear()
-    
-    def get_redis(self) -> Any:
-        """
-        Get Redis client.
-        
-        Returns:
-            Redis client or None
-        """
-        if self.redis_enabled:
-            return self.redis
-        return None
-    
-    def is_redis_available(self) -> bool:
-        """
-        Check if Redis is available.
-        
-        Returns:
-            Whether Redis is available
-        """
-        if not self.redis_enabled:
-            return False
-        
-        try:
-            self.redis.ping()
-            return True
-        except:
-            return False
-    
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """
-        Get cache statistics.
-        
-        Returns:
-            Cache statistics
-        """
-        stats = {
-            "query_cache": {
-                "size": len(self.query_cache.cache),
-                "max_size": self.query_cache.max_size,
-                "ttl": self.query_cache.ttl
-            },
-            "redis_enabled": self.redis_enabled
-        }
-        
-        # Add Redis stats if enabled
-        if self.redis_enabled:
-            try:
-                info = self.redis.info()
-                stats["redis"] = {
-                    "used_memory_human": info.get("used_memory_human"),
-                    "connected_clients": info.get("connected_clients"),
-                    "uptime_in_seconds": info.get("uptime_in_seconds")
-                }
             except:
-                stats["redis"] = {"status": "error"}
+                self.redis_cache = None
+        else:
+            self.redis_cache = None
+    
+    def get_query_cache(self) -> MemoryCache:
+        """
+        Get query cache.
         
-        return stats
+        Returns:
+            Query cache
+        """
+        return self.query_cache
+    
+    def get_document_cache(self) -> DiskCache:
+        """
+        Get document cache.
+        
+        Returns:
+            Document cache
+        """
+        return self.document_cache
+    
+    def get_embedding_cache(self) -> Union[MemoryCache, DiskCache]:
+        """
+        Get embedding cache.
+        
+        Returns:
+            Embedding cache
+        """
+        return self.embedding_cache
+    
+    def get_redis_cache(self) -> Optional[RedisCache]:
+        """
+        Get Redis cache.
+        
+        Returns:
+            Redis cache or None
+        """
+        return self.redis_cache
+    
+    def clear_all_caches(self) -> None:
+        """Clear all caches."""
+        self.query_cache.clear()
+        self.document_cache.clear()
+        self.embedding_cache.clear()
+        
+        if self.redis_cache:
+            self.redis_cache.clear()
+
+
+# Define a decorator for caching function results
+def cache_result(cache: Union[MemoryCache, DiskCache, RedisCache], ttl: Optional[int] = None) -> Callable:
+    """
+    Decorator for caching function results.
+    
+    Args:
+        cache: Cache to use
+        ttl: Time-to-live in seconds
+        
+    Returns:
+        Decorator function
+    """
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> Any:
+            # Generate cache key
+            key = f"{func.__name__}:{str(args)}:{str(kwargs)}"
+            key_hash = hashlib.md5(key.encode()).hexdigest()
+            
+            # Check if result is in cache
+            result = cache.get(key_hash)
+            if result is not None:
+                return result
+            
+            # Call function
+            result = func(*args, **kwargs)
+            
+            # Cache result
+            cache.set(key_hash, result, ttl)
+            
+            return result
+        
+        return wrapper
+    
+    return decorator
