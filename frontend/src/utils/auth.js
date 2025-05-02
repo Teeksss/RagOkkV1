@@ -1,147 +1,76 @@
-/**
- * Authentication utility functions
- */
+// Token güvenlik fonksiyonları eklenmeli
 
 /**
- * Get JWT token's remaining time in seconds
+ * JWT token'ının güvenliğini kontrol eder
  * 
  * @param {string} token JWT token
- * @returns {number} Remaining time in seconds
+ * @returns {boolean} Token'ın güvenli olup olmadığı
  */
-export const getTokenRemainingTime = (token) => {
+export const validateTokenSecurity = (token) => {
   try {
-    const decoded = parseJwt(token);
-    const expirationTime = decoded.exp * 1000; // Convert to milliseconds
-    const currentTime = Date.now();
-    return Math.max(0, Math.floor((expirationTime - currentTime) / 1000));
+    // Token'ın parçalarını ayır
+    const parts = token.split('.');
+    
+    if (parts.length !== 3) {
+      console.warn('Invalid JWT format');
+      return false;
+    }
+    
+    // Payload'ı decode et
+    const payload = JSON.parse(atob(parts[1]));
+    
+    // Kritik güvenlik kontrollerini yap
+    
+    // 1. Token'ın süresinin geçip geçmediğini kontrol et
+    const now = Math.floor(Date.now() / 1000);
+    if (!payload.exp || payload.exp <= now) {
+      console.warn('Token expired');
+      return false;
+    }
+    
+    // 2. Token'ın henüz geçerli olup olmadığını kontrol et (iat/nbf)
+    if (payload.nbf && payload.nbf > now) {
+      console.warn('Token not yet valid');
+      return false;
+    }
+    
+    // 3. Beklenen audience'ı kontrol et
+    const expectedAudience = process.env.REACT_APP_JWT_AUDIENCE || 'rag-app';
+    if (payload.aud && payload.aud !== expectedAudience) {
+      console.warn('Token audience mismatch');
+      return false;
+    }
+    
+    // 4. Beklenen issuer'ı kontrol et
+    const expectedIssuer = process.env.REACT_APP_JWT_ISSUER || 'rag-api';
+    if (payload.iss && payload.iss !== expectedIssuer) {
+      console.warn('Token issuer mismatch');
+      return false;
+    }
+    
+    return true;
   } catch (error) {
-    return 0;
+    console.error('Token validation error:', error);
+    return false;
   }
 };
 
 /**
- * Check if token needs to be refreshed
- * Typically we refresh if less than 5 minutes remaining
+ * Oturum açma sırasında yeni alınan token'ları güvenlik açısından kontrol eder
  * 
- * @param {string} token JWT token
- * @param {number} threshold Threshold in seconds (default: 300 = 5 minutes)
- * @returns {boolean} Whether token should be refreshed
+ * @param {Object} authResponse Auth API yanıtı
+ * @returns {boolean} Token'ların güvenli olup olmadığı
  */
-export const shouldRefreshToken = (token, threshold = 300) => {
-  const remainingTime = getTokenRemainingTime(token);
-  return remainingTime < threshold;
-};
-
-/**
- * Parse JWT token to get payload
- * 
- * @param {string} token JWT token
- * @returns {Object} Decoded token payload
- */
-export const parseJwt = (token) => {
-  try {
-    const base64Url = token.split('.')[1];
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = decodeURIComponent(atob(base64).split('').map((c) => {
-      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-    }).join(''));
-
-    return JSON.parse(jsonPayload);
-  } catch (error) {
-    console.error('Error parsing JWT:', error);
-    return {};
-  }
-};
-
-/**
- * Validate password strength
- * 
- * @param {string} password Password to validate
- * @returns {Object} Validation result with valid flag and message
- */
-export const validatePassword = (password) => {
-  // Check minimum length
-  if (password.length < 8) {
-    return {
-      valid: false,
-      message: 'Password must be at least 8 characters long'
-    };
+export const validateAuthTokens = (authResponse) => {
+  // Access token'ı kontrol et
+  if (!validateTokenSecurity(authResponse.access_token)) {
+    return false;
   }
   
-  // Check for at least one uppercase letter
-  if (!/[A-Z]/.test(password)) {
-    return {
-      valid: false,
-      message: 'Password must contain at least one uppercase letter'
-    };
+  // Refresh token varsa kontrol et
+  if (authResponse.refresh_token && !validateTokenSecurity(authResponse.refresh_token)) {
+    return false;
   }
   
-  // Check for at least one lowercase letter
-  if (!/[a-z]/.test(password)) {
-    return {
-      valid: false,
-      message: 'Password must contain at least one lowercase letter'
-    };
-  }
-  
-  // Check for at least one number
-  if (!/[0-9]/.test(password)) {
-    return {
-      valid: false,
-      message: 'Password must contain at least one number'
-    };
-  }
-  
-  // Check for at least one special character
-  if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
-    return {
-      valid: false,
-      message: 'Password must contain at least one special character'
-    };
-  }
-  
-  return {
-    valid: true,
-    message: 'Password is strong'
-  };
-};
-
-/**
- * Validate email format
- * 
- * @param {string} email Email to validate
- * @returns {boolean} Whether email is valid
- */
-export const isValidEmail = (email) => {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-};
-
-/**
- * Validate username format 
- * 
- * @param {string} username Username to validate
- * @returns {Object} Validation result with valid flag and message
- */
-export const validateUsername = (username) => {
-  // Check length
-  if (username.length < 3) {
-    return {
-      valid: false,
-      message: 'Username must be at least 3 characters long'
-    };
-  }
-  
-  // Check for valid characters (letters, numbers, underscores, hyphens)
-  if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
-    return {
-      valid: false,
-      message: 'Username can only contain letters, numbers, underscores and hyphens'
-    };
-  }
-  
-  return {
-    valid: true,
-    message: 'Username is valid'
-  };
+  return true;
 };

@@ -3,39 +3,41 @@ import axios from 'axios';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
 
 /**
- * Get auth header for API requests
+ * Get auth header with token for API requests
  * 
- * @returns {Object} Auth header object
+ * @returns {Object} Headers with Authorization
  */
 export const getAuthHeader = () => {
   const token = localStorage.getItem('access_token');
   
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  if (token) {
+    return { Authorization: `Bearer ${token}` };
+  }
+  
+  return {};
 };
 
 /**
  * Login user
  * 
- * @param {Object} credentials Login credentials
- * @param {string} credentials.username Username or email
+ * @param {Object} credentials User credentials
+ * @param {string} credentials.username Username
  * @param {string} credentials.password Password
+ * @param {boolean} credentials.remember Remember user
  * @returns {Promise<Object>} Login response with tokens
  */
 export const login = async (credentials) => {
   try {
     const response = await axios.post(
       `${API_URL}/auth/login`,
-      {
-        username: credentials.username,
-        password: credentials.password
-      }
+      credentials
     );
     
     return response.data;
   } catch (error) {
     throw new Error(
       error.response?.data?.detail || 
-      'Invalid username or password'
+      'Invalid username or password.'
     );
   }
 };
@@ -45,7 +47,7 @@ export const login = async (credentials) => {
  * 
  * @param {Object} userData User registration data
  * @param {string} userData.username Username
- * @param {string} userData.email Email address
+ * @param {string} userData.email Email
  * @param {string} userData.password Password
  * @param {string} userData.full_name Full name (optional)
  * @returns {Promise<Object>} Registration response
@@ -69,21 +71,21 @@ export const register = async (userData) => {
 /**
  * Logout user
  * 
- * @param {string} refreshToken Refresh token
  * @returns {Promise<Object>} Logout response
  */
-export const logout = async (refreshToken) => {
+export const logout = async () => {
   try {
     const response = await axios.post(
-      `${API_URL}/auth/logout/refresh`,
-      { refresh_token: refreshToken }
+      `${API_URL}/auth/logout`,
+      {},
+      { headers: getAuthHeader() }
     );
     
     return response.data;
   } catch (error) {
     throw new Error(
       error.response?.data?.detail || 
-      'Logout failed. Please try again.'
+      'Logout failed.'
     );
   }
 };
@@ -92,7 +94,7 @@ export const logout = async (refreshToken) => {
  * Refresh access token
  * 
  * @param {string} refreshToken Refresh token
- * @returns {Promise<Object>} Token refresh response
+ * @returns {Promise<Object>} New tokens
  */
 export const refreshToken = async (refreshToken) => {
   try {
@@ -105,17 +107,17 @@ export const refreshToken = async (refreshToken) => {
   } catch (error) {
     throw new Error(
       error.response?.data?.detail || 
-      'Token refresh failed. Please login again.'
+      'Failed to refresh token.'
     );
   }
 };
 
 /**
- * Get authenticated user data
+ * Get current user profile
  * 
- * @returns {Promise<Object>} User data
+ * @returns {Promise<Object>} User profile data
  */
-export const getAuthUser = async () => {
+export const getUserProfile = async () => {
   try {
     const response = await axios.get(
       `${API_URL}/users/me`,
@@ -126,7 +128,7 @@ export const getAuthUser = async () => {
   } catch (error) {
     throw new Error(
       error.response?.data?.detail || 
-      'Failed to get user data.'
+      'Failed to fetch user profile.'
     );
   }
 };
@@ -135,7 +137,7 @@ export const getAuthUser = async () => {
  * Request password reset
  * 
  * @param {string} email User email
- * @returns {Promise<Object>} Password reset request response
+ * @returns {Promise<Object>} Response
  */
 export const requestPasswordReset = async (email) => {
   try {
@@ -148,7 +150,7 @@ export const requestPasswordReset = async (email) => {
   } catch (error) {
     throw new Error(
       error.response?.data?.detail || 
-      'Password reset request failed. Please try again.'
+      'Failed to request password reset.'
     );
   }
 };
@@ -156,26 +158,45 @@ export const requestPasswordReset = async (email) => {
 /**
  * Reset password with token
  * 
- * @param {Object} resetData Password reset data
- * @param {string} resetData.token Reset token
- * @param {string} resetData.password New password
- * @returns {Promise<Object>} Password reset response
+ * @param {Object} data Reset data
+ * @param {string} data.token Reset token
+ * @param {string} data.password New password
+ * @returns {Promise<Object>} Response
  */
-export const resetPassword = async (resetData) => {
+export const resetPassword = async (data) => {
   try {
     const response = await axios.post(
-      `${API_URL}/auth/password-reset/verify`,
-      {
-        token: resetData.token,
-        password: resetData.password
-      }
+      `${API_URL}/auth/password-reset/confirm`,
+      data
     );
     
     return response.data;
   } catch (error) {
     throw new Error(
       error.response?.data?.detail || 
-      'Password reset failed. Please try again.'
+      'Failed to reset password.'
+    );
+  }
+};
+
+/**
+ * Verify email with token
+ * 
+ * @param {string} token Verification token
+ * @returns {Promise<Object>} Response
+ */
+export const verifyEmail = async (token) => {
+  try {
+    const response = await axios.post(
+      `${API_URL}/auth/verify-email`,
+      { token }
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Email verification failed.'
     );
   }
 };

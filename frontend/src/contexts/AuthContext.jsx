@@ -1,206 +1,182 @@
 import React, { createContext, useState, useEffect } from 'react';
-import { login as apiLogin, logout as apiLogout, refreshToken, getAuthUser } from '../api/auth';
-import { parseJwt, shouldRefreshToken, getTokenRemainingTime } from '../utils/auth';
+import { login as apiLogin, register as apiRegister, logout as apiLogout, refreshToken, getUserProfile } from '../api/auth';
 
-export const AuthContext = createContext(null);
+// Create context
+export const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [tokenRefreshInterval, setTokenRefreshInterval] = useState(null);
-
-  // Initialize auth state from localStorage on app load
+  const [authError, setAuthError] = useState(null);
+  
+  // Initialize auth state from localStorage
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        const token = localStorage.getItem('access_token');
-        const refreshTokenValue = localStorage.getItem('refresh_token');
-        
-        if (!token) {
-          setLoading(false);
-          return;
-        }
-        
-        const tokenData = parseJwt(token);
-        
-        // Check if token is expired
-        if (Date.now() >= tokenData.exp * 1000) {
-          // Try to refresh token if we have a refresh token
-          if (refreshTokenValue) {
-            try {
-              const result = await refreshToken(refreshTokenValue);
-              
-              // Store new tokens
-              localStorage.setItem('access_token', result.access_token);
-              
-              if (result.refresh_token) {
-                localStorage.setItem('refresh_token', result.refresh_token);
-              }
-              
-              // Set authenticated state
-              setIsAuthenticated(true);
-              
-              // Fetch user details
-              await fetchUserDetails();
-            } catch (err) {
-              console.error('Failed to refresh token:', err);
-              handleLogout();
-            }
-          } else {
+    const checkAuth = async () => {
+      const token = localStorage.getItem('access_token');
+      
+      if (token) {
+        try {
+          // Get user profile
+          const userData = await getUserProfile();
+          setUser(userData);
+          setIsAuthenticated(true);
+        } catch (error) {
+          // If token is invalid, try to refresh
+          try {
+            await handleRefreshToken();
+          } catch (refreshError) {
+            // If refresh fails, clear auth state
             handleLogout();
           }
-        } else {
-          // Token is valid, set authenticated state
-          setIsAuthenticated(true);
-          
-          // Fetch user details
-          await fetchUserDetails();
         }
-      } catch (err) {
-        console.error('Authentication initialization error:', err);
-        handleLogout();
-      } finally {
-        setLoading(false);
       }
+      
+      setLoading(false);
     };
     
-    initAuth();
-    
-    // Setup token refresh interval
-    setupTokenRefresh();
-    
-    return () => {
-      if (tokenRefreshInterval) {
-        clearInterval(tokenRefreshInterval);
-      }
-    };
+    checkAuth();
   }, []);
-
-  // Setup token refresh interval
-  const setupTokenRefresh = () => {
-    // Clear any existing interval
-    if (tokenRefreshInterval) {
-      clearInterval(tokenRefreshInterval);
-    }
-    
-    // Check token every minute
-    const interval = setInterval(async () => {
-      const token = localStorage.getItem('access_token');
-      const refreshTokenValue = localStorage.getItem('refresh_token');
+  
+  // Set up token refresh interval
+  useEffect(() => {
+    if (isAuthenticated) {
+      const intervalId = setInterval(() => {
+        handleRefreshToken();
+      }, 15 * 60 * 1000); // Refresh token every 15 minutes
       
-      if (!token || !refreshTokenValue) {
-        return;
-      }
-      
-      if (shouldRefreshToken(token)) {
-        try {
-          const result = await refreshToken(refreshTokenValue);
-          
-          // Store new tokens
-          localStorage.setItem('access_token', result.access_token);
-          
-          if (result.refresh_token) {
-            localStorage.setItem('refresh_token', result.refresh_token);
-          }
-          
-          console.log('Token refreshed automatically');
-        } catch (err) {
-          console.error('Failed to refresh token:', err);
-          // Don't logout on refresh failure, wait until token actually expires
-        }
-      }
-    }, 60000); // Check every minute
-    
-    setTokenRefreshInterval(interval);
-  };
-
-  // Fetch current user details
-  const fetchUserDetails = async () => {
-    try {
-      const userData = await getAuthUser();
-      setUser(userData);
-    } catch (err) {
-      console.error('Failed to fetch user details:', err);
-      handleLogout();
+      return () => clearInterval(intervalId);
     }
-  };
-
-  // Login
-  const login = async (credentials) => {
-    setLoading(true);
-    
+  }, [isAuthenticated]);
+  
+  const handleLogin = async (credentials) => {
     try {
-      const result = await apiLogin(credentials);
+      setLoading(true);
+      setAuthError(null);
+      
+      const response = await apiLogin(credentials);
       
       // Store tokens
-      localStorage.setItem('access_token', result.access_token);
-      localStorage.setItem('refresh_token', result.refresh_token);
+      localStorage.setItem('access_token', response.access_token);
+      localStorage.setItem('refresh_token', response.refresh_token);
       
-      // Set authenticated state
+      // Get user profile
+      const userData = await getUserProfile();
+      setUser(userData);
       setIsAuthenticated(true);
       
-      // Fetch user details
-      await fetchUserDetails();
-      
-      // Setup token refresh interval
-      setupTokenRefresh();
-      
-      return true;
-    } catch (err) {
-      console.error('Login error:', err);
-      throw err;
+      return userData;
+    } catch (error) {
+      setAuthError(error.message || 'Login failed');
+      throw error;
     } finally {
       setLoading(false);
     }
   };
-
-  // Logout
-  const logout = async () => {
-    setLoading(true);
-    
+  
+  const handleRegister = async (userData) => {
+    try {
+      setLoading(true);
+      setAuthError(null);
+      
+      const response = await apiRegister(userData);
+      
+      // Store tokens if registration auto-logs in
+      if (response.access_token) {
+        localStorage.setItem('access_token', response.access_token);
+        localStorage.setItem('refresh_token', response.refresh_token);
+        
+        // Get user profile
+        const profileData = await getUserProfile();
+        setUser(profileData);
+        setIsAuthenticated(true);
+      }
+      
+      return response;
+    } catch (error) {
+      setAuthError(error.message || 'Registration failed');
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const handleLogout = async () => {
+    try {
+      setLoading(true);
+      
+      // Call logout API if authenticated
+      if (isAuthenticated) {
+        await apiLogout();
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      // Clear auth state regardless of API call result
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      setUser(null);
+      setIsAuthenticated(false);
+      setLoading(false);
+    }
+  };
+  
+  const handleRefreshToken = async () => {
     try {
       const refreshTokenValue = localStorage.getItem('refresh_token');
       
-      if (refreshTokenValue) {
-        await apiLogout(refreshTokenValue);
+      if (!refreshTokenValue) {
+        throw new Error('No refresh token available');
       }
-    } catch (err) {
-      console.error('Error during logout:', err);
-    } finally {
-      handleLogout();
-      setLoading(false);
+      
+      const response = await refreshToken(refreshTokenValue);
+      
+      // Update stored tokens
+      localStorage.setItem('access_token', response.access_token);
+      
+      // Store new refresh token if provided
+      if (response.refresh_token) {
+        localStorage.setItem('refresh_token', response.refresh_token);
+      }
+      
+      return response;
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+      // If refresh fails, clear auth state
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      setUser(null);
+      setIsAuthenticated(false);
+      throw error;
     }
   };
-
-  // Handle logout (without API call)
-  const handleLogout = () => {
-    // Clear auth state
-    setUser(null);
-    setIsAuthenticated(false);
-    
-    // Clear tokens from localStorage
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    
-    // Clear token refresh interval
-    if (tokenRefreshInterval) {
-      clearInterval(tokenRefreshInterval);
-      setTokenRefreshInterval(null);
+  
+  const refreshUser = async () => {
+    try {
+      const userData = await getUserProfile();
+      setUser(userData);
+      return userData;
+    } catch (error) {
+      console.error('Error refreshing user data:', error);
+      throw error;
     }
   };
-
+  
+  // Context value
+  const contextValue = {
+    user,
+    isAuthenticated,
+    loading,
+    authError,
+    login: handleLogin,
+    register: handleRegister,
+    logout: handleLogout,
+    refreshToken: handleRefreshToken,
+    refreshUser,
+  };
+  
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        isAuthenticated,
-        loading,
-        login,
-        logout,
-        refreshUser: fetchUserDetails
-      }}
-    >
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

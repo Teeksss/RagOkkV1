@@ -4,7 +4,7 @@ import { getAuthHeader } from './auth';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
 
 /**
- * Get all conversations
+ * Get conversations with pagination
  * 
  * @param {Object} params Query parameters
  * @param {number} params.page Page number
@@ -33,17 +33,12 @@ export const getConversations = async (params = {}) => {
  * Get conversation by ID
  * 
  * @param {string} conversationId Conversation ID
- * @param {Object} params Query parameters
- * @param {number} params.page Page number for messages
- * @param {number} params.limit Items per page for messages
- * @returns {Promise<Object>} Conversation with messages
+ * @returns {Promise<Object>} Conversation data with messages
  */
-export const getConversation = async (conversationId, params = {}) => {
+export const getConversation = async (conversationId) => {
   try {
-    const { page = 1, limit = 50 } = params;
-    
     const response = await axios.get(
-      `${API_URL}/conversations/${conversationId}?page=${page}&limit=${limit}`,
+      `${API_URL}/conversations/${conversationId}`,
       { headers: getAuthHeader() }
     );
     
@@ -57,11 +52,11 @@ export const getConversation = async (conversationId, params = {}) => {
 };
 
 /**
- * Create a new conversation
+ * Create new conversation
  * 
  * @param {Object} data Conversation data
- * @param {string} data.title Conversation title
- * @param {Array<string>} data.document_ids Document IDs to include in conversation context
+ * @param {string} data.title Conversation title (optional)
+ * @param {Array<string>} data.document_ids Document IDs to include (optional)
  * @returns {Promise<Object>} Created conversation
  */
 export const createConversation = async (data) => {
@@ -79,98 +74,6 @@ export const createConversation = async (data) => {
       'Failed to create conversation.'
     );
   }
-};
-
-/**
- * Send a message in a conversation
- * 
- * @param {string} conversationId Conversation ID
- * @param {Object} data Message data
- * @param {string} data.content Message content
- * @param {Array<string>} data.document_ids Documents to include in context (optional)
- * @param {Object} options Request options
- * @param {Function} options.onStreamChunk Callback for streaming responses
- * @returns {Promise<Object>} Response message
- */
-export const sendMessage = async (conversationId, data, options = {}) => {
-  try {
-    // Check if we need to use streaming
-    if (options.onStreamChunk) {
-      return sendStreamingMessage(conversationId, data, options);
-    }
-    
-    const response = await axios.post(
-      `${API_URL}/conversations/${conversationId}/messages`,
-      data,
-      { headers: getAuthHeader() }
-    );
-    
-    return response.data;
-  } catch (error) {
-    throw new Error(
-      error.response?.data?.detail || 
-      'Failed to send message.'
-    );
-  }
-};
-
-/**
- * Send a message with streaming response
- * 
- * @param {string} conversationId Conversation ID
- * @param {Object} data Message data
- * @param {Object} options Request options
- * @returns {Promise<Object>} Completed message
- */
-const sendStreamingMessage = async (conversationId, data, options) => {
-  return new Promise((resolve, reject) => {
-    const { onStreamChunk } = options;
-    
-    // Set up event source for SSE (Server-Sent Events)
-    const queryParams = new URLSearchParams({
-      content: data.content,
-      ...(data.document_ids ? { document_ids: data.document_ids.join(',') } : {})
-    }).toString();
-    
-    const token = localStorage.getItem('access_token');
-    const eventSource = new EventSource(
-      `${API_URL}/conversations/${conversationId}/messages/stream?${queryParams}`,
-      { 
-        headers: { 
-          'Authorization': `Bearer ${token}`
-        },
-        withCredentials: true
-      }
-    );
-    
-    let fullResponse = null;
-    
-    // Handle incoming message chunks
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        if (data.type === 'chunk') {
-          // Process chunk
-          onStreamChunk(data.content);
-        } else if (data.type === 'end') {
-          // Stream completed, return full message
-          fullResponse = data.message;
-          eventSource.close();
-          resolve(fullResponse);
-        }
-      } catch (err) {
-        console.error('Error parsing SSE message:', err);
-      }
-    };
-    
-    // Handle errors
-    eventSource.onerror = (error) => {
-      console.error('SSE Error:', error);
-      eventSource.close();
-      reject(new Error('Stream connection failed'));
-    };
-  });
 };
 
 /**
@@ -221,20 +124,95 @@ export const deleteConversation = async (conversationId) => {
 };
 
 /**
+ * Send message in conversation
+ * 
+ * @param {string} conversationId Conversation ID
+ * @param {Object} data Message data
+ * @param {string} data.content Message content
+ * @param {Array<string>} data.document_ids Document IDs to reference (optional)
+ * @param {Object} options Additional options
+ * @param {Function} options.onStreamChunk Callback for streaming chunks
+ * @returns {Promise<Object>} Response with user and assistant messages
+ */
+export const sendMessage = async (conversationId, data, options = {}) => {
+  try {
+    // Check if streaming is supported
+    const supportsStreaming = 'onStreamChunk' in options;
+    
+    const requestConfig = {
+      headers: {
+        ...getAuthHeader(),
+        'Content-Type': 'application/json',
+      },
+    };
+    
+    // Add streaming support if callback provided
+    if (supportsStreaming) {
+      requestConfig.responseType = 'stream';
+      requestConfig.onDownloadProgress = (progressEvent) => {
+        const response = progressEvent.currentTarget.response;
+        
+        if (response) {
+          try {
+            // Parse streaming response chunks
+            // Assuming each chunk is a complete JSON object
+            const jsonChunks = response.split('\n').filter(Boolean);
+            
+            // Process each chunk
+            jsonChunks.forEach(chunk => {
+              try {
+                const parsedChunk = JSON.parse(chunk);
+                
+                if (parsedChunk.type === 'content' && options.onStreamChunk) {
+                  options.onStreamChunk(parsedChunk.content);
+                }
+              } catch (e) {
+                console.warn('Error parsing streaming chunk:', e);
+              }
+            });
+          } catch (e) {
+            console.error('Error processing streaming response:', e);
+          }
+        }
+      };
+    }
+    
+    // Add streaming flag to request if supported
+    const requestBody = {
+      ...data,
+      stream: supportsStreaming
+    };
+    
+    const response = await axios.post(
+      `${API_URL}/conversations/${conversationId}/messages`,
+      requestBody,
+      requestConfig
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Failed to send message.'
+    );
+  }
+};
+
+/**
  * Add feedback to a message
  * 
  * @param {string} conversationId Conversation ID
  * @param {string} messageId Message ID
- * @param {Object} data Feedback data
- * @param {boolean} data.is_helpful Whether response was helpful
- * @param {string} data.feedback_text Optional feedback text
+ * @param {Object} feedback Feedback data
+ * @param {boolean} feedback.is_helpful Whether message was helpful
+ * @param {string} feedback.feedback_text Additional feedback text (optional)
  * @returns {Promise<Object>} Response
  */
-export const addMessageFeedback = async (conversationId, messageId, data) => {
+export const addMessageFeedback = async (conversationId, messageId, feedback) => {
   try {
     const response = await axios.post(
       `${API_URL}/conversations/${conversationId}/messages/${messageId}/feedback`,
-      data,
+      feedback,
       { headers: getAuthHeader() }
     );
     
@@ -243,6 +221,33 @@ export const addMessageFeedback = async (conversationId, messageId, data) => {
     throw new Error(
       error.response?.data?.detail || 
       'Failed to submit feedback.'
+    );
+  }
+};
+
+/**
+ * Get conversation history for a document
+ * 
+ * @param {string} documentId Document ID
+ * @param {Object} params Query parameters
+ * @param {number} params.page Page number
+ * @param {number} params.limit Items per page
+ * @returns {Promise<Object>} Conversations related to document
+ */
+export const getDocumentConversations = async (documentId, params = {}) => {
+  try {
+    const { page = 1, limit = 10 } = params;
+    
+    const response = await axios.get(
+      `${API_URL}/documents/${documentId}/conversations?page=${page}&limit=${limit}`,
+      { headers: getAuthHeader() }
+    );
+    
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      error.response?.data?.detail || 
+      'Failed to fetch document conversations.'
     );
   }
 };
